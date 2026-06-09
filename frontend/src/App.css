@@ -1,0 +1,166 @@
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #1a1a1a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f4f5f7;
+}
+
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.subtitle {
+  color: #666;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.me {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: #444;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e3e5e8;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.signin {
+  margin-top: 16px;
+}
+
+.composer {
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+input {
+  border: 1px solid #d0d3d7;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  outline: none;
+}
+
+input:focus {
+  border-color: #4f7cff;
+}
+
+.grow {
+  flex: 1;
+  min-width: 180px;
+}
+
+button {
+  background: #4f7cff;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3a67ec;
+}
+
+button.link {
+  background: none;
+  color: #4f7cff;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.feed-title {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+  margin: 8px 0 12px;
+}
+
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg {
+  background: #fff;
+  border: 1px solid #e3e5e8;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  margin-bottom: 4px;
+}
+
+.from {
+  font-weight: 600;
+}
+
+.arrow {
+  color: #aaa;
+}
+
+.to {
+  font-weight: 600;
+  color: #4f7cff;
+}
+
+.time {
+  margin-left: auto;
+  color: #999;
+  font-size: 0.75rem;
+}
+
+.msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.empty {
+  color: #999;
+  text-align: center;
+  padding: 24px;
+}
+
+.error {
+  color: #c0392b;
+  font-size: 0.9rem;
+}
