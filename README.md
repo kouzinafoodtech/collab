@@ -57,59 +57,85 @@ docker run -p 8000:8000 \
 Then open http://localhost:8000 — both the UI and the API are served from the
 same origin.
 
-## Deploy to Azure (App Service + Azure Database for MySQL) on your own subdomain
+## Deploy to Azure Container Apps (cheapest) on your own subdomain
 
-> Replace the placeholder values (`RG`, `myapp`, host/user/password, and
-> `chat.example.com`) with your own.
+We deploy to **Azure Container Apps** on the **Consumption plan** — it scales to
+zero when idle (so you pay ~nothing for a low-traffic internal tool) and supports
+a custom domain with a free managed TLS certificate. It's backed by your existing
+**Azure Database for MySQL**.
 
-### 1. Build & push the image to Azure Container Registry (ACR)
+### Credentials — read this first (nothing secret goes in the repo)
+
+You provide two sets of credentials, and **neither is committed or pasted into
+chat**:
+
+1. **Azure** — authenticate the `az` CLI on your own machine:
+
+   ```bash
+   az login                      # opens a browser; uses YOUR Azure identity
+   az account set --subscription "<your-subscription-id-or-name>"
+   az extension add --name containerapp --upgrade
+   ```
+
+   That's it for manual deploys — the script below acts as you. (For automated
+   GitHub Actions deploys you'd instead create a service principal / OIDC
+   federated credential and store it in GitHub Secrets — ask and we'll wire it.)
+
+2. **MySQL** — pass the connection string as an environment variable in your own
+   shell. The deploy script reads it and stores it as a **Container Apps secret**
+   (encrypted, referenced by the app at runtime) — it never touches the repo:
+
+   ```bash
+   export DATABASE_URL="mysql+pymysql://USER:PASSWORD@HOST.mysql.database.azure.com:3306/DBNAME"
+   ```
+
+   To rotate it later without redeploying the image:
+
+   ```bash
+   az containerapp secret set -g rg-internal-messaging -n internal-messaging \
+     --secrets db-url="mysql+pymysql://USER:NEWPASSWORD@HOST:3306/DBNAME"
+   az containerapp revision restart -g rg-internal-messaging -n internal-messaging \
+     --revision $(az containerapp revision list -g rg-internal-messaging -n internal-messaging --query '[0].name' -o tsv)
+   ```
+
+### One-command deploy
+
+From the **repo root**, after the two exports above:
 
 ```bash
-az acr create -g RG -n myregistry --sku Basic
-az acr login -n myregistry
-docker build -t myregistry.azurecr.io/internal-messaging:latest .
-docker push myregistry.azurecr.io/internal-messaging:latest
+export DATABASE_URL="mysql+pymysql://USER:PASSWORD@HOST.mysql.database.azure.com:3306/DBNAME"
+export CUSTOM_DOMAIN="chat.example.com"      # optional; omit to just get the azure URL
+./deploy/azure-containerapps.sh
 ```
 
-### 2. Create the Web App (Linux container)
+The script (see `deploy/azure-containerapps.sh`) will:
 
-```bash
-az appservice plan create -g RG -n myplan --is-linux --sku B1
-az webapp create -g RG -p myplan -n myapp \
-  --deployment-container-image-name myregistry.azurecr.io/internal-messaging:latest
-```
+1. Create a resource group + Azure Container Registry.
+2. **Build the image in the cloud** with `az acr build` — no local Docker needed.
+3. Create a Container Apps environment and deploy the app (port 8000, min
+   replicas 0 = scale to zero).
+4. Print the live `*.azurecontainerapps.io` URL.
+5. If `CUSTOM_DOMAIN` is set, print the exact **CNAME** + **asuid TXT** records to
+   add at your DNS provider, then bind the domain with a free managed cert.
 
-### 3. Point it at your Azure MySQL database
+### Custom subdomain (what the script tells you to add)
 
-```bash
-az webapp config appsettings set -g RG -n myapp --settings \
-  DATABASE_URL="mysql+pymysql://USER:PASSWORD@MYHOST.mysql.database.azure.com:3306/DBNAME" \
-  WEBSITES_PORT=8000
-```
-
-The app creates its tables automatically on first boot. Make sure the MySQL
-server's networking allows access from the Web App (enable "Allow public access
-from Azure services", or use a VNet/Private Endpoint). Azure MySQL requires TLS,
-which the app enables automatically for `mysql` URLs.
-
-### 4. Add your custom subdomain
-
-In your DNS provider, add records for `chat.example.com`:
+At your DNS provider, for `chat.example.com`:
 
 ```
-CNAME  chat   myapp.azurewebsites.net
-TXT    asuid.chat   <verification id from `az webapp config hostname get-external-ip` flow>
+CNAME  chat         <your-app>.<region>.azurecontainerapps.io
+TXT    asuid.chat   <customDomainVerificationId printed by the script>
 ```
 
-Then bind it and enable a free managed TLS certificate:
+Once DNS propagates, re-run the script (or the two `hostname add` / `hostname
+bind` commands it prints) and Azure issues a **free managed TLS certificate**.
 
-```bash
-az webapp config hostname add -g RG --webapp-name myapp \
-  --hostname chat.example.com
+Your messaging app is then live at **https://chat.example.com**.
 
-az webapp config ssl create -g RG --name myapp --hostname chat.example.com
-az webapp config ssl bind -g RG --name myapp \
-  --certificate-thumbprint <thumbprint-from-previous-step> --ssl-type SNI
-```
+### MySQL networking note
 
-Your messaging app is now live at **https://chat.example.com**.
+The app auto-creates its tables on first boot. Make sure your Azure MySQL
+server lets the Container App connect — enable **"Allow public access from Azure
+services"** on the MySQL Flexible Server, or place both in the same VNet /
+Private Endpoint. Azure MySQL requires TLS, which the app enables automatically
+for `mysql` URLs.
