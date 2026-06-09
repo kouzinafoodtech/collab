@@ -79,7 +79,23 @@ jobs:
             exit 1
           fi
 
-          if az containerapp show -g "$RG" -n "$APP" --only-show-errors >/dev/null 2>&1; then
+          APP_EXISTS=false
+          az containerapp show -g "$RG" -n "$APP" --only-show-errors >/dev/null 2>&1 && APP_EXISTS=true
+
+          # APP_SECRET signs the login JWTs. Generate it once and keep it stable
+          # across deploys so existing sessions stay valid; only create it if the
+          # app doesn't already have one.
+          HAS_APP_SECRET=""
+          if [ "$APP_EXISTS" = true ]; then
+            HAS_APP_SECRET=$(az containerapp secret list -g "$RG" -n "$APP" \
+              --query "[?name=='app-secret'].name" -o tsv 2>/dev/null || true)
+          fi
+          if [ -z "$HAS_APP_SECRET" ]; then
+            SECRETS+=( "app-secret=$(openssl rand -hex 32)" )
+          fi
+          ENV_VARS+=( "APP_SECRET=secretref:app-secret" )
+
+          if [ "$APP_EXISTS" = true ]; then
             echo "Updating existing app..."
             az containerapp secret set -g "$RG" -n "$APP" \
               --secrets "${SECRETS[@]}" --only-show-errors

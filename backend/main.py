@@ -1,27 +1,30 @@
 """
-Internal messaging system — backend.
+Internal messaging — admin-only, private 1:1 direct messages.
 
-Anyone can register, anyone can message anyone, and every message is stored in
-the database. The whole feed is public: everyone can see every message sent
-between everyone.
+Auth:
+    Admins log in with their pkdb.admins email + password (bcrypt). On success
+    they get a signed JWT (HS256, signed with APP_SECRET) used as a Bearer token.
+
+Messaging:
+    Messages are private between two admins. You only ever see conversations you
+    are part of, and you can only message active admins (no external parties).
 
 Storage:
-    Set DATABASE_URL to a SQLAlchemy URL. For Azure Database for MySQL:
-        mysql+pymysql://USER:PASSWORD@HOST:3306/DBNAME
-    Azure MySQL requires TLS; this is enabled automatically for mysql URLs.
-    If DATABASE_URL is unset, falls back to a local SQLite file (handy for dev).
-
-Serving:
-    In production this app also serves the built React frontend (the contents
-    of the directory named by FRONTEND_DIR, default ./static) at "/", with the
-    API mounted under "/api".
+    Messages live in this app's database (DATABASE_URL / MYSQL_* — see below).
+    Admins are read from pkdb.admins on the SAME MySQL server via a cross-database
+    query, so no separate connection is needed.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+import bcrypt
+import jwt
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import (
@@ -33,6 +36,7 @@ from sqlalchemy import (
     Text,
     create_engine,
     func,
+    text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -40,13 +44,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 
 def _build_db_url():
-    """Pick where to store data.
-
-    Prefer discrete MYSQL_* env vars: SQLAlchemy's URL.create() escapes the
-    password for us, so any special characters (@, :, /, #, …) just work — no
-    manual URL-encoding needed. Fall back to a full DATABASE_URL string, then to
-    a local SQLite file for development.
-    """
     host = os.environ.get("MYSQL_HOST")
     if host:
         return URL.create(
@@ -69,12 +66,10 @@ _backend = (
     if isinstance(DATABASE_URL, URL)
     else str(DATABASE_URL).split("://", 1)[0]
 )
+IS_MYSQL = _backend.startswith("mysql")
 
-# MySQL on Azure requires TLS. Enable it for any mysql URL. If a CA bundle path
-# is provided we verify against it; otherwise we still use TLS (Azure terminates
-# with a trusted cert, so unverified TLS keeps the connection encrypted).
 connect_args = {}
-if _backend.startswith("mysql"):
+if IS_MYSQL:
     ca = os.environ.get("MYSQL_SSL_CA")
     connect_args = {"ssl": {"ca": ca} if ca else {"ssl": True}}
 elif _backend.startswith("sqlite"):
@@ -85,50 +80,125 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 Base = declarative_base()
 
 
-class UserRow(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(50), unique=True, nullable=False)
-
-
 class MessageRow(Base):
     __tablename__ = "messages"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    sender = Column(String(50), nullable=False)
-    recipient = Column(String(50), nullable=False)
+    sender = Column(String(255), nullable=False)
+    recipient = Column(String(255), nullable=False)
     body = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 Base.metadata.create_all(engine)
 
+# Existing deployments created sender/recipient as VARCHAR(50); emails need more.
+if IS_MYSQL:
+    with engine.begin() as conn:
+        for col in ("sender", "recipient"):
+            try:
+                conn.execute(text(f"ALTER TABLE messages MODIFY {col} VARCHAR(255) NOT NULL"))
+            except Exception:
+                pass  # already widened
 
-# ---- App -------------------------------------------------------------------
 
-app = FastAPI(title="Internal Messaging")
+# ---- Auth helpers ----------------------------------------------------------
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+APP_SECRET = os.environ.get("APP_SECRET", "dev-only-insecure-secret-change-me")
+JWT_ALG = "HS256"
+TOKEN_TTL = timedelta(hours=12)
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    # Laravel/PHP often emit "$2y$" bcrypt hashes; normalise to "$2b$".
+    if password_hash.startswith("$2y$"):
+        password_hash = "$2b$" + password_hash[4:]
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except Exception:
+        return False
+
+
+def fetch_admin_by_email(email: str) -> Optional[dict]:
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT name, email, password_hash, active "
+                    "FROM pkdb.admins WHERE email = :e LIMIT 1"
+                ),
+                {"e": email},
+            ).mappings().first()
+            return dict(row) if row else None
+    # Local dev fallback (no pkdb available).
+    dev_email = os.environ.get("DEV_ADMIN_EMAIL", "dev@local")
+    if email.lower() == dev_email.lower():
+        pw = os.environ.get("DEV_ADMIN_PASSWORD", "dev")
+        return {
+            "name": "Dev Admin",
+            "email": dev_email,
+            "password_hash": bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode(),
+            "active": 1,
+        }
+    return None
+
+
+def list_active_admins() -> list[dict]:
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT name, email FROM pkdb.admins WHERE active = 1 ORDER BY name")
+            ).mappings().all()
+            return [dict(r) for r in rows]
+    return [
+        {"name": "Dev Admin", "email": os.environ.get("DEV_ADMIN_EMAIL", "dev@local")},
+        {"name": "Alice Admin", "email": "alice@local"},
+    ]
+
+
+def is_active_admin(email: str) -> bool:
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            return (
+                conn.execute(
+                    text("SELECT 1 FROM pkdb.admins WHERE email = :e AND active = 1 LIMIT 1"),
+                    {"e": email},
+                ).first()
+                is not None
+            )
+    return any(a["email"] == email for a in list_active_admins())
+
+
+def make_token(email: str, name: Optional[str]) -> str:
+    payload = {
+        "sub": email,
+        "name": name or email,
+        "exp": datetime.now(timezone.utc) + TOKEN_TTL,
+    }
+    return jwt.encode(payload, APP_SECRET, algorithm=JWT_ALG)
+
+
+bearer = HTTPBearer(auto_error=False)
+
+
+def current_admin(cred: Optional[HTTPAuthorizationCredentials] = Depends(bearer)) -> dict:
+    if cred is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(cred.credentials, APP_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return {"email": payload["sub"], "name": payload.get("name")}
 
 
 # ---- Schemas ---------------------------------------------------------------
 
-class UserIn(BaseModel):
-    name: str = Field(..., min_length=1, max_length=50)
-
-
-class User(BaseModel):
-    id: int
-    name: str
+class LoginIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=1, max_length=255)
 
 
 class MessageIn(BaseModel):
-    sender: str = Field(..., min_length=1, max_length=50)
-    recipient: str = Field(..., min_length=1, max_length=50)
+    recipient: str = Field(..., min_length=3, max_length=255)
     body: str = Field(..., min_length=1, max_length=2000)
 
 
@@ -140,16 +210,28 @@ class Message(BaseModel):
     created_at: str
 
 
-# ---- API -------------------------------------------------------------------
+def _serialize(r: MessageRow) -> Message:
+    return Message(
+        id=r.id,
+        sender=r.sender,
+        recipient=r.recipient,
+        body=r.body,
+        created_at=r.created_at.isoformat() if r.created_at else "",
+    )
 
-api = FastAPI()  # sub-app so everything below lives under /api
 
-api.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ---- App -------------------------------------------------------------------
+
+app = FastAPI(title="Internal Messaging")
+api = FastAPI()
+
+for sub in (app, api):
+    sub.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @api.get("/health")
@@ -157,75 +239,75 @@ def health():
     return {"status": "ok"}
 
 
-@api.get("/users", response_model=list[User])
-def list_users():
-    with SessionLocal() as db:
-        rows = db.query(UserRow).order_by(UserRow.name).all()
-    return [User(id=r.id, name=r.name) for r in rows]
+@api.post("/login")
+def login(body: LoginIn):
+    admin = fetch_admin_by_email(body.email.strip())
+    if (
+        not admin
+        or not admin.get("active")
+        or not _verify_password(body.password, admin["password_hash"])
+    ):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return {
+        "token": make_token(admin["email"], admin.get("name")),
+        "email": admin["email"],
+        "name": admin.get("name") or admin["email"],
+    }
 
 
-@api.post("/users", response_model=User, status_code=201)
-def create_user(user: UserIn):
-    name = user.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Name cannot be empty")
-    with SessionLocal() as db:
-        existing = db.query(UserRow).filter(UserRow.name == name).one_or_none()
-        if existing:
-            return User(id=existing.id, name=existing.name)
-        row = UserRow(name=name)
-        db.add(row)
-        db.commit()
-        return User(id=row.id, name=row.name)
+@api.get("/me")
+def me(admin: dict = Depends(current_admin)):
+    return admin
+
+
+@api.get("/admins")
+def admins(admin: dict = Depends(current_admin)):
+    """Active admins you can message (everyone but yourself)."""
+    return [a for a in list_active_admins() if a["email"] != admin["email"]]
 
 
 @api.get("/messages", response_model=list[Message])
-def list_messages():
-    """The whole public feed — every message between everyone."""
+def get_messages(
+    with_email: Optional[str] = Query(default=None),
+    admin: dict = Depends(current_admin),
+):
+    """Messages involving you. With ?with_email=X, just the thread with X."""
+    me_email = admin["email"]
     with SessionLocal() as db:
-        rows = db.query(MessageRow).order_by(MessageRow.id.asc()).all()
-    return [
-        Message(
-            id=r.id,
-            sender=r.sender,
-            recipient=r.recipient,
-            body=r.body,
-            created_at=r.created_at.isoformat() if r.created_at else "",
-        )
-        for r in rows
-    ]
+        q = db.query(MessageRow)
+        if with_email:
+            q = q.filter(
+                ((MessageRow.sender == me_email) & (MessageRow.recipient == with_email))
+                | ((MessageRow.sender == with_email) & (MessageRow.recipient == me_email))
+            )
+        else:
+            q = q.filter(
+                (MessageRow.sender == me_email) | (MessageRow.recipient == me_email)
+            )
+        rows = q.order_by(MessageRow.id.asc()).all()
+    return [_serialize(r) for r in rows]
 
 
 @api.post("/messages", response_model=Message, status_code=201)
-def send_message(msg: MessageIn):
-    sender = msg.sender.strip()
-    recipient = msg.recipient.strip()
-    body = msg.body.strip()
-    if not body:
-        raise HTTPException(status_code=400, detail="Message body cannot be empty")
-
+def send_message(body: MessageIn, admin: dict = Depends(current_admin)):
+    recipient = body.recipient.strip()
+    text_body = body.body.strip()
+    if not text_body:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if recipient == admin["email"]:
+        raise HTTPException(status_code=400, detail="You can't message yourself")
+    if not is_active_admin(recipient):
+        raise HTTPException(status_code=400, detail="Recipient must be an active admin")
     with SessionLocal() as db:
-        # Auto-register sender and recipient so messaging "just works".
-        for name in (sender, recipient):
-            if not db.query(UserRow).filter(UserRow.name == name).one_or_none():
-                db.add(UserRow(name=name))
-        row = MessageRow(sender=sender, recipient=recipient, body=body)
+        row = MessageRow(sender=admin["email"], recipient=recipient, body=text_body)
         db.add(row)
         db.commit()
-        return Message(
-            id=row.id,
-            sender=row.sender,
-            recipient=row.recipient,
-            body=row.body,
-            created_at=row.created_at.isoformat() if row.created_at else "",
-        )
+        return _serialize(row)
 
 
 app.mount("/api", api)
 
 # ---- Static frontend (production) ------------------------------------------
-# Serve the built React app at "/" if it has been built into FRONTEND_DIR.
-# Mounted last so it doesn't shadow /api.
 FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", Path(__file__).parent / "static"))
 if FRONTEND_DIR.is_dir():
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
