@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import (
+    URL,
     Column,
     DateTime,
     Integer,
@@ -37,19 +38,46 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 # ---- Database --------------------------------------------------------------
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    f"sqlite:///{Path(__file__).parent / 'messages.db'}",
+
+def _build_db_url():
+    """Pick where to store data.
+
+    Prefer discrete MYSQL_* env vars: SQLAlchemy's URL.create() escapes the
+    password for us, so any special characters (@, :, /, #, …) just work — no
+    manual URL-encoding needed. Fall back to a full DATABASE_URL string, then to
+    a local SQLite file for development.
+    """
+    host = os.environ.get("MYSQL_HOST")
+    if host:
+        return URL.create(
+            "mysql+pymysql",
+            username=os.environ.get("MYSQL_USER"),
+            password=os.environ.get("MYSQL_PASSWORD"),
+            host=host,
+            port=int(os.environ.get("MYSQL_PORT", "3306")),
+            database=os.environ.get("MYSQL_DB"),
+        )
+    env_url = os.environ.get("DATABASE_URL")
+    if env_url:
+        return env_url
+    return f"sqlite:///{Path(__file__).parent / 'messages.db'}"
+
+
+DATABASE_URL = _build_db_url()
+_backend = (
+    DATABASE_URL.drivername
+    if isinstance(DATABASE_URL, URL)
+    else str(DATABASE_URL).split("://", 1)[0]
 )
 
 # MySQL on Azure requires TLS. Enable it for any mysql URL. If a CA bundle path
 # is provided we verify against it; otherwise we still use TLS (Azure terminates
 # with a trusted cert, so unverified TLS keeps the connection encrypted).
 connect_args = {}
-if DATABASE_URL.startswith("mysql"):
+if _backend.startswith("mysql"):
     ca = os.environ.get("MYSQL_SSL_CA")
     connect_args = {"ssl": {"ca": ca} if ca else {"ssl": True}}
-elif DATABASE_URL.startswith("sqlite"):
+elif _backend.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)

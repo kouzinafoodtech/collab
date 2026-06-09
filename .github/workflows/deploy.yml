@@ -48,13 +48,25 @@ jobs:
 
           az containerapp env create -g "$RG" -n "$ENVIRONMENT" -l "$LOCATION" --only-show-errors || true
 
+          # Only the password is sensitive (stored as a Container Apps secret).
+          # Host/user/db are passed as plain env vars. The app assembles the
+          # connection from these parts, so special characters in the password
+          # need no manual URL-encoding.
+          ENV_VARS=(
+            "MYSQL_HOST=${{ secrets.MYSQL_HOST }}"
+            "MYSQL_USER=${{ secrets.MYSQL_USER }}"
+            "MYSQL_DB=${{ secrets.MYSQL_DB }}"
+            "MYSQL_PASSWORD=secretref:mysql-password"
+            "PORT=8000"
+          )
+
           if az containerapp show -g "$RG" -n "$APP" --only-show-errors >/dev/null 2>&1; then
             echo "Updating existing app..."
             az containerapp secret set -g "$RG" -n "$APP" \
-              --secrets "db-url=${{ secrets.DATABASE_URL }}" --only-show-errors
+              --secrets "mysql-password=${{ secrets.MYSQL_PASSWORD }}" --only-show-errors
             az containerapp update -g "$RG" -n "$APP" \
               --image "$IMAGE" \
-              --set-env-vars "DATABASE_URL=secretref:db-url" "PORT=8000" --only-show-errors
+              --set-env-vars "${ENV_VARS[@]}" --only-show-errors
           else
             echo "Creating app..."
             az containerapp create -g "$RG" -n "$APP" \
@@ -67,8 +79,8 @@ jobs:
               --ingress external \
               --min-replicas 0 \
               --max-replicas 2 \
-              --secrets "db-url=${{ secrets.DATABASE_URL }}" \
-              --env-vars "DATABASE_URL=secretref:db-url" "PORT=8000" --only-show-errors
+              --secrets "mysql-password=${{ secrets.MYSQL_PASSWORD }}" \
+              --env-vars "${ENV_VARS[@]}" --only-show-errors
           fi
 
           FQDN=$(az containerapp show -g "$RG" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)
