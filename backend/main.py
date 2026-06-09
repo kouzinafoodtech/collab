@@ -2,69 +2,89 @@
 Internal messaging system — backend.
 
 Anyone can register, anyone can message anyone, and every message is stored in
-SQLite. The whole feed is public: everyone can see every message sent between
-everyone.
+the database. The whole feed is public: everyone can see every message sent
+between everyone.
 
-Run:
-    pip install -r requirements.txt
-    uvicorn main:app --reload
+Storage:
+    Set DATABASE_URL to a SQLAlchemy URL. For Azure Database for MySQL:
+        mysql+pymysql://USER:PASSWORD@HOST:3306/DBNAME
+    Azure MySQL requires TLS; this is enabled automatically for mysql URLs.
+    If DATABASE_URL is unset, falls back to a local SQLite file (handy for dev).
+
+Serving:
+    In production this app also serves the built React frontend (the contents
+    of the directory named by FRONTEND_DIR, default ./static) at "/", with the
+    API mounted under "/api".
 """
 
-import sqlite3
-from contextlib import contextmanager
-from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    func,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-DB_PATH = Path(__file__).parent / "messages.db"
+# ---- Database --------------------------------------------------------------
+
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    f"sqlite:///{Path(__file__).parent / 'messages.db'}",
+)
+
+# MySQL on Azure requires TLS. Enable it for any mysql URL. If a CA bundle path
+# is provided we verify against it; otherwise we still use TLS (Azure terminates
+# with a trusted cert, so unverified TLS keeps the connection encrypted).
+connect_args = {}
+if DATABASE_URL.startswith("mysql"):
+    ca = os.environ.get("MYSQL_SSL_CA")
+    connect_args = {"ssl": {"ca": ca} if ca else {"ssl": True}}
+elif DATABASE_URL.startswith("sqlite"):
+    connect_args = {"check_same_thread": False}
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+Base = declarative_base()
+
+
+class UserRow(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(50), unique=True, nullable=False)
+
+
+class MessageRow(Base):
+    __tablename__ = "messages"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sender = Column(String(50), nullable=False)
+    recipient = Column(String(50), nullable=False)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+Base.metadata.create_all(engine)
+
+
+# ---- App -------------------------------------------------------------------
 
 app = FastAPI(title="Internal Messaging")
 
-# Allow the React dev server (and anything else, since this is an internal demo)
-# to talk to the API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@contextmanager
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def init_db():
-    with get_db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id   INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                sender     TEXT NOT NULL,
-                recipient  TEXT NOT NULL,
-                body       TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            """
-        )
-
-
-init_db()
 
 
 # ---- Schemas ---------------------------------------------------------------
@@ -92,45 +112,63 @@ class Message(BaseModel):
     created_at: str
 
 
-# ---- Users -----------------------------------------------------------------
+# ---- API -------------------------------------------------------------------
 
-@app.get("/users", response_model=list[User])
+api = FastAPI()  # sub-app so everything below lives under /api
+
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@api.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@api.get("/users", response_model=list[User])
 def list_users():
-    with get_db() as conn:
-        rows = conn.execute("SELECT id, name FROM users ORDER BY name").fetchall()
-    return [dict(r) for r in rows]
+    with SessionLocal() as db:
+        rows = db.query(UserRow).order_by(UserRow.name).all()
+    return [User(id=r.id, name=r.name) for r in rows]
 
 
-@app.post("/users", response_model=User, status_code=201)
+@api.post("/users", response_model=User, status_code=201)
 def create_user(user: UserIn):
     name = user.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name cannot be empty")
-    with get_db() as conn:
-        existing = conn.execute(
-            "SELECT id, name FROM users WHERE name = ?", (name,)
-        ).fetchone()
+    with SessionLocal() as db:
+        existing = db.query(UserRow).filter(UserRow.name == name).one_or_none()
         if existing:
-            # Registering an existing name is idempotent — just return them.
-            return dict(existing)
-        cur = conn.execute("INSERT INTO users (name) VALUES (?)", (name,))
-        return {"id": cur.lastrowid, "name": name}
+            return User(id=existing.id, name=existing.name)
+        row = UserRow(name=name)
+        db.add(row)
+        db.commit()
+        return User(id=row.id, name=row.name)
 
 
-# ---- Messages --------------------------------------------------------------
-
-@app.get("/messages", response_model=list[Message])
+@api.get("/messages", response_model=list[Message])
 def list_messages():
     """The whole public feed — every message between everyone."""
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, sender, recipient, body, created_at "
-            "FROM messages ORDER BY id ASC"
-        ).fetchall()
-    return [dict(r) for r in rows]
+    with SessionLocal() as db:
+        rows = db.query(MessageRow).order_by(MessageRow.id.asc()).all()
+    return [
+        Message(
+            id=r.id,
+            sender=r.sender,
+            recipient=r.recipient,
+            body=r.body,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+        for r in rows
+    ]
 
 
-@app.post("/messages", response_model=Message, status_code=201)
+@api.post("/messages", response_model=Message, status_code=201)
 def send_message(msg: MessageIn):
     sender = msg.sender.strip()
     recipient = msg.recipient.strip()
@@ -138,20 +176,28 @@ def send_message(msg: MessageIn):
     if not body:
         raise HTTPException(status_code=400, detail="Message body cannot be empty")
 
-    created_at = datetime.now(timezone.utc).isoformat()
-    with get_db() as conn:
+    with SessionLocal() as db:
         # Auto-register sender and recipient so messaging "just works".
         for name in (sender, recipient):
-            conn.execute("INSERT OR IGNORE INTO users (name) VALUES (?)", (name,))
-        cur = conn.execute(
-            "INSERT INTO messages (sender, recipient, body, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (sender, recipient, body, created_at),
+            if not db.query(UserRow).filter(UserRow.name == name).one_or_none():
+                db.add(UserRow(name=name))
+        row = MessageRow(sender=sender, recipient=recipient, body=body)
+        db.add(row)
+        db.commit()
+        return Message(
+            id=row.id,
+            sender=row.sender,
+            recipient=row.recipient,
+            body=row.body,
+            created_at=row.created_at.isoformat() if row.created_at else "",
         )
-        return {
-            "id": cur.lastrowid,
-            "sender": sender,
-            "recipient": recipient,
-            "body": body,
-            "created_at": created_at,
-        }
+
+
+app.mount("/api", api)
+
+# ---- Static frontend (production) ------------------------------------------
+# Serve the built React app at "/" if it has been built into FRONTEND_DIR.
+# Mounted last so it doesn't shadow /api.
+FRONTEND_DIR = Path(os.environ.get("FRONTEND_DIR", Path(__file__).parent / "static"))
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

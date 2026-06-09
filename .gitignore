@@ -7,6 +7,9 @@ venv/
 # SQLite database (created at runtime)
 backend/messages.db
 
+# Built frontend copied in for serving / Docker
+backend/static/
+
 # Node / Vite
 node_modules/
 frontend/dist/
