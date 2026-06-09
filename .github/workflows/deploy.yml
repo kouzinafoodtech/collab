@@ -53,22 +53,36 @@ jobs:
 
           az containerapp env create -g "$RG" -n "$ENVIRONMENT" -l "$LOCATION" --only-show-errors || true
 
-          # Only the password is sensitive (stored as a Container Apps secret).
-          # Host/user/db are passed as plain env vars. The app assembles the
-          # connection from these parts, so special characters in the password
-          # need no manual URL-encoding.
-          ENV_VARS=(
-            "MYSQL_HOST=${{ secrets.MYSQL_HOST }}"
-            "MYSQL_USER=${{ secrets.MYSQL_USER }}"
-            "MYSQL_DB=${{ secrets.MYSQL_DB }}"
-            "MYSQL_PASSWORD=secretref:mysql-password"
-            "PORT=8000"
-          )
+          # Support two ways of providing the database connection:
+          #  A) Discrete MYSQL_* secrets — the app assembles the URL itself, so
+          #     the password needs no URL-encoding (preferred).
+          #  B) A single DATABASE_URL secret — the password MUST be percent-
+          #     encoded inside the URL (e.g. '@' -> '%40').
+          # Whichever is set takes effect; only the secret part is stored as an
+          # encrypted Container Apps secret.
+          if [ -n "${{ secrets.MYSQL_PASSWORD }}" ]; then
+            echo "Using discrete MYSQL_* secrets"
+            SECRETS=( "mysql-password=${{ secrets.MYSQL_PASSWORD }}" )
+            ENV_VARS=(
+              "MYSQL_HOST=${{ secrets.MYSQL_HOST }}"
+              "MYSQL_USER=${{ secrets.MYSQL_USER }}"
+              "MYSQL_DB=${{ secrets.MYSQL_DB }}"
+              "MYSQL_PASSWORD=secretref:mysql-password"
+              "PORT=8000"
+            )
+          elif [ -n "${{ secrets.DATABASE_URL }}" ]; then
+            echo "Using DATABASE_URL secret"
+            SECRETS=( "db-url=${{ secrets.DATABASE_URL }}" )
+            ENV_VARS=( "DATABASE_URL=secretref:db-url" "PORT=8000" )
+          else
+            echo "::error::No database secret set. Provide either MYSQL_PASSWORD (+MYSQL_HOST/USER/DB) or DATABASE_URL."
+            exit 1
+          fi
 
           if az containerapp show -g "$RG" -n "$APP" --only-show-errors >/dev/null 2>&1; then
             echo "Updating existing app..."
             az containerapp secret set -g "$RG" -n "$APP" \
-              --secrets "mysql-password=${{ secrets.MYSQL_PASSWORD }}" --only-show-errors
+              --secrets "${SECRETS[@]}" --only-show-errors
             az containerapp update -g "$RG" -n "$APP" \
               --image "$IMAGE" \
               --set-env-vars "${ENV_VARS[@]}" --only-show-errors
@@ -84,7 +98,7 @@ jobs:
               --ingress external \
               --min-replicas 0 \
               --max-replicas 2 \
-              --secrets "mysql-password=${{ secrets.MYSQL_PASSWORD }}" \
+              --secrets "${SECRETS[@]}" \
               --env-vars "${ENV_VARS[@]}" --only-show-errors
           fi
 
