@@ -13,6 +13,11 @@ permissions:
   id-token: write # required for Azure OIDC login (no stored password)
   contents: read
 
+# Never let two deploys touch the Azure environment at once.
+concurrency:
+  group: deploy-container-app
+  cancel-in-progress: false
+
 env:
   RG: rg-internal-messaging
   LOCATION: centralindia
