@@ -1,0 +1,75 @@
+name: Deploy to Azure Container Apps
+
+# Builds the image on Azure (az acr build) and deploys to Azure Container Apps.
+# Everything runs on GitHub-hosted runners + Azure — nothing on your machine.
+
+on:
+  push:
+    branches:
+      - claude/upbeat-goldberg-1iwz26
+  workflow_dispatch: # lets you trigger a deploy by hand from the Actions tab
+
+permissions:
+  id-token: write # required for Azure OIDC login (no stored password)
+  contents: read
+
+env:
+  RG: rg-internal-messaging
+  LOCATION: centralindia
+  ACR: kouzinamsgacr # must be globally unique; change if this name is taken
+  APP: internal-messaging
+  ENVIRONMENT: msg-env
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image on Azure Container Registry
+        run: |
+          az extension add --name containerapp --upgrade --only-show-errors
+          az group create -n "$RG" -l "$LOCATION" --only-show-errors
+          az acr create -g "$RG" -n "$ACR" --sku Basic --admin-enabled true --only-show-errors || true
+          az acr build -r "$ACR" -t "internal-messaging:${{ github.sha }}" . --only-show-errors
+
+      - name: Deploy to Container Apps
+        run: |
+          IMAGE="$ACR.azurecr.io/internal-messaging:${{ github.sha }}"
+          ACR_USER=$(az acr credential show -n "$ACR" --query username -o tsv)
+          ACR_PASS=$(az acr credential show -n "$ACR" --query 'passwords[0].value' -o tsv)
+
+          az containerapp env create -g "$RG" -n "$ENVIRONMENT" -l "$LOCATION" --only-show-errors || true
+
+          if az containerapp show -g "$RG" -n "$APP" --only-show-errors >/dev/null 2>&1; then
+            echo "Updating existing app..."
+            az containerapp secret set -g "$RG" -n "$APP" \
+              --secrets "db-url=${{ secrets.DATABASE_URL }}" --only-show-errors
+            az containerapp update -g "$RG" -n "$APP" \
+              --image "$IMAGE" \
+              --set-env-vars "DATABASE_URL=secretref:db-url" "PORT=8000" --only-show-errors
+          else
+            echo "Creating app..."
+            az containerapp create -g "$RG" -n "$APP" \
+              --environment "$ENVIRONMENT" \
+              --image "$IMAGE" \
+              --registry-server "$ACR.azurecr.io" \
+              --registry-username "$ACR_USER" \
+              --registry-password "$ACR_PASS" \
+              --target-port 8000 \
+              --ingress external \
+              --min-replicas 0 \
+              --max-replicas 2 \
+              --secrets "db-url=${{ secrets.DATABASE_URL }}" \
+              --env-vars "DATABASE_URL=secretref:db-url" "PORT=8000" --only-show-errors
+          fi
+
+          FQDN=$(az containerapp show -g "$RG" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "### Deployed: https://$FQDN" >> "$GITHUB_STEP_SUMMARY"

@@ -64,6 +64,25 @@ zero when idle (so you pay ~nothing for a low-traffic internal tool) and support
 a custom domain with a free managed TLS certificate. It's backed by your existing
 **Azure Database for MySQL**.
 
+There are two ways to deploy. **Pick the GitHub Actions path if you want nothing
+on your own machine.**
+
+### Option A — GitHub Actions (recommended: nothing runs on your machine)
+
+A workflow (`.github/workflows/deploy.yml`) builds the image **on Azure** and
+deploys on every push. You only ever touch two browser screens — Azure Cloud
+Shell (to mint a credential) and GitHub Secrets (to store it).
+
+➡️ Follow **[deploy/GITHUB_ACTIONS_SETUP.md](deploy/GITHUB_ACTIONS_SETUP.md)**.
+
+Your credentials go into **GitHub → Settings → Secrets** and **Azure Cloud
+Shell** — never into the repo, your laptop, or anywhere else.
+
+### Option B — One command from your machine
+
+If you'd rather deploy locally, the script below builds on Azure too
+(`az acr build`, no local Docker) but is launched from your shell.
+
 ### Credentials — read this first (nothing secret goes in the repo)
 
 You provide two sets of credentials, and **neither is committed or pasted into
