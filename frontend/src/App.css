@@ -266,6 +266,18 @@ button.link {
   gap: 8px;
 }
 
+.load-older {
+  align-self: center;
+  background: #fff;
+  color: #4f7cff;
+  border: 1px solid #d7defc;
+  margin-top: 4px;
+}
+
+.load-older:hover {
+  background: #eef2ff;
+}
+
 /* ---- Messenger layout ---- */
 .messenger {
   display: grid;

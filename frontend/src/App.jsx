@@ -155,17 +155,48 @@ function Shell({ me, authFetch, logout }) {
 
 // ---- Live Updates feed ------------------------------------------------------
 
+const PAGE = 30;
+
+function mergeEvents(current, incoming) {
+  // Union by id, newest (highest id) first — polls update the top of the
+  // feed while "Load older" pages append history without clobbering it.
+  const byId = new Map();
+  for (const e of [...current, ...incoming]) byId.set(e.id, e);
+  return [...byId.values()].sort((a, b) => b.id - a.id);
+}
+
 function Feed({ me, authFetch }) {
   const [events, setEvents] = useState([]);
   const [openComments, setOpenComments] = useState(null); // event id
+  const [reachedEnd, setReachedEnd] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   const load = useCallback(() => {
-    authFetch("/feed")
+    authFetch(`/feed?limit=${PAGE}`)
       .then((r) => r.json())
-      .then((data) => setEvents(data.events))
+      .then((data) => {
+        setEvents((cur) => mergeEvents(cur, data.events));
+        if (data.events.length < PAGE) setReachedEnd(true);
+      })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function loadOlder() {
+    if (!events.length || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const oldest = events[events.length - 1].id;
+      const res = await authFetch(`/feed?limit=${PAGE}&cursor=${oldest}`);
+      const data = await res.json();
+      setEvents((cur) => mergeEvents(cur, data.events));
+      if (data.events.length < PAGE) setReachedEnd(true);
+    } catch {
+      /* ignore */
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
 
   useEffect(() => {
     load();
@@ -234,6 +265,11 @@ function Feed({ me, authFetch }) {
       ))}
       {events.length === 0 && (
         <div className="empty big">No updates yet — actions on the portals will appear here.</div>
+      )}
+      {events.length > 0 && !reachedEnd && (
+        <button className="load-older" onClick={loadOlder} disabled={loadingOlder}>
+          {loadingOlder ? "Loading…" : "Load older updates"}
+        </button>
       )}
     </main>
   );

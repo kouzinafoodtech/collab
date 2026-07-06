@@ -270,6 +270,39 @@ def _summarize(action: str, entity_type: Optional[str], entity_id) -> str:
     return f"{verb}{target}".strip()
 
 
+def _render_summary(action: str, summary: str, details: Optional[str]) -> str:
+    """Enrich the stored summary from the audit row's details JSON at serve
+    time — names beat ids, and before→after changes are what admins care about."""
+    if not details:
+        return summary
+    try:
+        d = json.loads(details)
+    except (ValueError, TypeError):
+        return summary
+    if not isinstance(d, dict):
+        return summary
+
+    name = d.get("item_name") or d.get("name")
+
+    # An item being switched on/off is a stock-availability signal — call it out.
+    active = d.get("active")
+    if action == "item_setting_changed" and isinstance(active, dict) and "to" in active:
+        state = "ON" if active["to"] else "OFF"
+        return f"switched {state} · {name}" if name else f"switched {state} an item"
+
+    changes = [
+        f"{k}: {v['from']} → {v['to']}"
+        for k, v in d.items()
+        if isinstance(v, dict) and "from" in v and "to" in v
+    ]
+    out = summary
+    if name:
+        out = f"{out} · {name}"
+    if changes:
+        out = f"{out} ({', '.join(changes[:2])})"
+    return out
+
+
 def _ingest_pk_admin_audit(conn, last_id: int) -> tuple[list[dict], int]:
     """Pull new rows from pkdb.admin_audit_log. Returns (events, new_watermark)."""
     rows = conn.execute(
@@ -300,9 +333,17 @@ def _ingest_pk_admin_audit(conn, last_id: int) -> tuple[list[dict], int]:
     return events, watermark
 
 # Source registry — add KAC / KFC here later (or push-based sources via an
-# ingest API); each entry is (source_name, puller).
+# ingest API). "init" caps the first-ever backfill to the newest ~100 rows so
+# a newly added source doesn't flood the feed with its entire history.
 SOURCES = [
-    ("pkdb.admin_audit_log", _ingest_pk_admin_audit),
+    {
+        "name": "pkdb.admin_audit_log",
+        "puller": _ingest_pk_admin_audit,
+        "init": (
+            "SELECT COALESCE(MIN(id) - 1, 0) FROM "
+            "(SELECT id FROM pkdb.admin_audit_log ORDER BY id DESC LIMIT 100) t"
+        ),
+    },
 ]
 
 
@@ -317,6 +358,9 @@ def _seed_dev_events(db):
         ("Priya", "user_create", "created user #14"),
         ("Rohan", "expense_added", "expense added expense #501"),
     ]
+    details = json.dumps(
+        {"item_name": "LACCHA PARATHA MAIDA", "active": {"from": True, "to": False}}
+    )
     for i, (actor, action, summary) in enumerate(samples):
         db.add(
             FeedEventRow(
@@ -326,6 +370,7 @@ def _seed_dev_events(db):
                 actor=actor,
                 action=action,
                 summary=summary,
+                details=details if action == "item_setting_changed" else None,
                 happened_at=now - timedelta(minutes=7 * (len(samples) - i)),
             )
         )
@@ -355,12 +400,13 @@ def maybe_ingest():
             return
         try:
             with SessionLocal() as db:
-                for source_name, puller in SOURCES:
-                    state = db.get(IngestStateRow, source_name)
+                for source in SOURCES:
+                    state = db.get(IngestStateRow, source["name"])
                     if state is None:
-                        state = IngestStateRow(source=source_name, last_id=0)
+                        start = conn.execute(text(source["init"])).scalar() or 0
+                        state = IngestStateRow(source=source["name"], last_id=start)
                         db.add(state)
-                    events, watermark = puller(conn, state.last_id or 0)
+                    events, watermark = source["puller"](conn, state.last_id or 0)
                     for e in events:
                         exists = (
                             db.query(FeedEventRow.id)
@@ -460,15 +506,21 @@ def admins(admin: dict = Depends(current_admin)):
 
 @api.get("/feed")
 def get_feed(
-    limit: int = Query(default=100, le=200),
+    limit: int = Query(default=30, le=100),
+    cursor: Optional[int] = Query(default=None),
     portal: Optional[str] = Query(default=None),
     admin: dict = Depends(current_admin),
 ):
-    maybe_ingest()
+    """Latest events first. Pass cursor=<oldest seen id> to page into the past;
+    ingestion only runs on first-page requests."""
+    if cursor is None:
+        maybe_ingest()
     with SessionLocal() as db:
         q = db.query(FeedEventRow)
         if portal:
             q = q.filter(FeedEventRow.portal == portal)
+        if cursor is not None:
+            q = q.filter(FeedEventRow.id < cursor)
         rows = q.order_by(FeedEventRow.id.desc()).limit(limit).all()
 
         ids = [r.id for r in rows]
@@ -503,7 +555,7 @@ def get_feed(
                 "portal": r.portal,
                 "actor": r.actor,
                 "action": r.action,
-                "summary": r.summary,
+                "summary": _render_summary(r.action, r.summary, r.details),
                 "happened_at": r.happened_at.isoformat() if r.happened_at else "",
                 "like_count": like_counts.get(r.id, 0),
                 "liked_by_me": r.id in my_likes,
