@@ -296,23 +296,27 @@ def _render_summary(action: str, summary: str, details: Optional[str]) -> str:
         return summary
 
     name = d.get("item_name") or d.get("name")
+    module = d.get("module")  # which portal tab/section the action happened in
 
     # An item being switched on/off is a stock-availability signal — call it out.
     active = d.get("active")
     if action == "item_setting_changed" and isinstance(active, dict) and "to" in active:
         state = "ON" if active["to"] else "OFF"
-        return f"switched {state} · {name}" if name else f"switched {state} an item"
+        out = f"switched {state} · {name}" if name else f"switched {state} an item"
+        return f"{out} · in {module}" if module else out
 
     changes = [
         f"{k}: {v['from']} → {v['to']}"
         for k, v in d.items()
-        if isinstance(v, dict) and "from" in v and "to" in v
+        if isinstance(v, dict) and "from" in v and "to" in v and k != "module"
     ]
     out = summary
     if name:
         out = f"{out} · {name}"
     if changes:
         out = f"{out} ({', '.join(changes[:2])})"
+    if module:
+        out = f"{out} · in {module}"
     return out
 
 
