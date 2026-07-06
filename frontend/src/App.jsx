@@ -2,6 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const API = "/api";
 
+function formatWhen(iso) {
+  // Absolute local date + time, e.g. "10:49 AM" today or "6 Jul, 10:49 AM".
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return time;
+  return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${time}`;
+}
+
 function timeAgo(iso) {
   const then = new Date(iso).getTime();
   const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
@@ -250,7 +259,9 @@ function Feed({ me, authFetch }) {
             <span className={`badge badge-${ev.portal.toLowerCase()}`}>{ev.portal}</span>
             <strong className="event-actor">{ev.actor}</strong>
             <span className="event-summary">{ev.summary}</span>
-            <span className="event-time">{timeAgo(ev.happened_at)}</span>
+            <span className="event-time" title={new Date(ev.happened_at).toLocaleString()}>
+              {formatWhen(ev.happened_at)}
+            </span>
           </div>
           <div className="event-actions">
             <button

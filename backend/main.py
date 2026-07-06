@@ -153,6 +153,17 @@ if IS_MYSQL:
                 pass  # already widened
 
 
+def _iso_utc(dt) -> str:
+    """Serialize a DB datetime as ISO-8601 with an explicit UTC offset. The
+    databases store naive UTC; without the offset, browsers parse the string
+    as LOCAL time and every timestamp shifts by the viewer's UTC offset."""
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 # ---- Auth helpers ----------------------------------------------------------
 
 APP_SECRET = os.environ.get("APP_SECRET", "dev-only-insecure-secret-change-me")
@@ -356,43 +367,6 @@ SOURCES = [
         "init": _init_sql("pkdb.inventory_audit_log"),
     },
     {
-        "name": "kouzinaos.audit_log",
-        "portal": "KAC",
-        "sql": (
-            "SELECT id, COALESCE(user_email, 'system') AS actor, action, "
-            "CASE WHEN target LIKE '%:%' THEN CONCAT(SUBSTRING_INDEX(target, ':', 1), "
-            "' #', SUBSTRING_INDEX(target, ':', -1)) ELSE target END AS entity_type, "
-            "NULL AS entity_id, "
-            "meta AS details, created_at "
-            "FROM kouzinaos.audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
-        ),
-        "init": _init_sql("kouzinaos.audit_log"),
-    },
-    {
-        "name": "wodb.audit_log",
-        "portal": "KFC",
-        "sql": (
-            "SELECT id, COALESCE(user_email, 'system') AS actor, action, "
-            "CASE WHEN target LIKE '%:%' THEN CONCAT(SUBSTRING_INDEX(target, ':', 1), "
-            "' #', SUBSTRING_INDEX(target, ':', -1)) ELSE target END AS entity_type, "
-            "NULL AS entity_id, "
-            "meta AS details, created_at "
-            "FROM wodb.audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
-        ),
-        "init": _init_sql("wodb.audit_log"),
-    },
-    {
-        "name": "wodb.noc_agent_activity_logs",
-        "portal": "KFC",
-        "sql": (
-            "SELECT id, CONCAT('NOC agent #', user_id) AS actor, "
-            "event_type AS action, 'kitchen' AS entity_type, "
-            "kitchen_id AS entity_id, meta AS details, occurred_at AS created_at "
-            "FROM wodb.noc_agent_activity_logs WHERE id > :wm ORDER BY id LIMIT :lim"
-        ),
-        "init": _init_sql("wodb.noc_agent_activity_logs", time_col="occurred_at"),
-    },
-    {
         "name": "financedb.bill_activity_log",
         "portal": "FIN",
         "sql": (
@@ -405,6 +379,18 @@ SOURCES = [
         "init": _init_sql("financedb.bill_activity_log", time_col="performed_at"),
     },
 ]
+
+# Keep the feed scoped to the registered portals: drop events from sources
+# that were removed from the registry (idempotent, runs at boot).
+_ACTIVE_PORTALS = sorted({s["portal"] for s in SOURCES})
+with SessionLocal() as _db:
+    _db.query(FeedEventRow).filter(
+        ~FeedEventRow.portal.in_(_ACTIVE_PORTALS)
+    ).delete(synchronize_session=False)
+    _db.query(IngestStateRow).filter(
+        ~IngestStateRow.source.in_([s["name"] for s in SOURCES])
+    ).delete(synchronize_session=False)
+    _db.commit()
 
 
 def _seed_dev_events(db):
@@ -537,7 +523,7 @@ def _serialize_message(r: MessageRow) -> Message:
         sender=r.sender,
         recipient=r.recipient,
         body=r.body,
-        created_at=r.created_at.isoformat() if r.created_at else "",
+        created_at=_iso_utc(r.created_at),
     )
 
 
@@ -614,6 +600,9 @@ def get_feed(
                 ts = datetime.fromisoformat(cursor_ts)
             except ValueError:
                 raise HTTPException(status_code=400, detail="Bad cursor")
+            if ts.tzinfo is not None:
+                # Columns hold naive UTC; compare like with like.
+                ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
             q = q.filter(
                 or_(
                     FeedEventRow.happened_at < ts,
@@ -661,7 +650,7 @@ def get_feed(
                 "actor": r.actor,
                 "action": r.action,
                 "summary": _render_summary(r.action, r.summary, r.details),
-                "happened_at": r.happened_at.isoformat() if r.happened_at else "",
+                "happened_at": _iso_utc(r.happened_at),
                 "like_count": like_counts.get(r.id, 0),
                 "liked_by_me": r.id in my_likes,
                 "comment_count": comment_counts.get(r.id, 0),
@@ -707,7 +696,7 @@ def get_comments(event_id: int, admin: dict = Depends(current_admin)):
             "admin_email": r.admin_email,
             "admin_name": r.admin_name or r.admin_email,
             "body": r.body,
-            "created_at": r.created_at.isoformat() if r.created_at else "",
+            "created_at": _iso_utc(r.created_at),
         }
         for r in rows
     ]
@@ -734,7 +723,7 @@ def add_comment(event_id: int, body: CommentIn, admin: dict = Depends(current_ad
             "admin_email": row.admin_email,
             "admin_name": row.admin_name or row.admin_email,
             "body": row.body,
-            "created_at": row.created_at.isoformat() if row.created_at else "",
+            "created_at": _iso_utc(row.created_at),
         }
 
 
