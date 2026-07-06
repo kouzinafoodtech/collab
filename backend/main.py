@@ -31,7 +31,7 @@ from typing import Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -44,8 +44,10 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
     create_engine,
     func,
+    or_,
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -589,22 +591,42 @@ def admins(admin: dict = Depends(current_admin)):
 
 @api.get("/feed")
 def get_feed(
-    limit: int = Query(default=30, le=100),
-    cursor: Optional[int] = Query(default=None),
+    background_tasks: BackgroundTasks,
+    limit: int = Query(default=10, le=100),
+    cursor_ts: Optional[str] = Query(default=None),
+    cursor_id: Optional[int] = Query(default=None),
     portal: Optional[str] = Query(default=None),
     admin: dict = Depends(current_admin),
 ):
-    """Latest events first. Pass cursor=<oldest seen id> to page into the past;
-    ingestion only runs on first-page requests."""
-    if cursor is None:
-        maybe_ingest()
+    """Latest events first, ordered by when they actually happened. The first
+    page responds immediately from the local table; ingestion of new audit rows
+    runs AFTER the response is sent, so the feed is never blocked on the source
+    databases. Page into the past with cursor_ts + cursor_id (the happened_at
+    and id of the oldest event you have)."""
+    if cursor_ts is None:
+        background_tasks.add_task(maybe_ingest)
     with SessionLocal() as db:
         q = db.query(FeedEventRow)
         if portal:
             q = q.filter(FeedEventRow.portal == portal)
-        if cursor is not None:
-            q = q.filter(FeedEventRow.id < cursor)
-        rows = q.order_by(FeedEventRow.id.desc()).limit(limit).all()
+        if cursor_ts is not None and cursor_id is not None:
+            try:
+                ts = datetime.fromisoformat(cursor_ts)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Bad cursor")
+            q = q.filter(
+                or_(
+                    FeedEventRow.happened_at < ts,
+                    and_(
+                        FeedEventRow.happened_at == ts, FeedEventRow.id < cursor_id
+                    ),
+                )
+            )
+        rows = (
+            q.order_by(FeedEventRow.happened_at.desc(), FeedEventRow.id.desc())
+            .limit(limit)
+            .all()
+        )
 
         ids = [r.id for r in rows]
         like_counts: dict[int, int] = {}

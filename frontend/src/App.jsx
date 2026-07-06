@@ -155,28 +155,34 @@ function Shell({ me, authFetch, logout }) {
 
 // ---- Live Updates feed ------------------------------------------------------
 
-const PAGE = 30;
+const PAGE_FIRST = 10; // small first page = instant paint
+const PAGE_MORE = 30;
 
 function mergeEvents(current, incoming) {
-  // Union by id, newest (highest id) first — polls update the top of the
-  // feed while "Load older" pages append history without clobbering it.
+  // Union by id, ordered by when the event happened (newest first) — polls
+  // update the top of the feed while "Load older" appends history.
   const byId = new Map();
   for (const e of [...current, ...incoming]) byId.set(e.id, e);
-  return [...byId.values()].sort((a, b) => b.id - a.id);
+  return [...byId.values()].sort(
+    (a, b) =>
+      (b.happened_at || "").localeCompare(a.happened_at || "") || b.id - a.id
+  );
 }
 
 function Feed({ me, authFetch }) {
   const [events, setEvents] = useState([]);
+  const [loaded, setLoaded] = useState(false);
   const [openComments, setOpenComments] = useState(null); // event id
   const [reachedEnd, setReachedEnd] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
   const load = useCallback(() => {
-    authFetch(`/feed?limit=${PAGE}`)
+    authFetch(`/feed?limit=${PAGE_FIRST}`)
       .then((r) => r.json())
       .then((data) => {
         setEvents((cur) => mergeEvents(cur, data.events));
-        if (data.events.length < PAGE) setReachedEnd(true);
+        if (data.events.length < PAGE_FIRST) setReachedEnd(true);
+        setLoaded(true);
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -186,11 +192,15 @@ function Feed({ me, authFetch }) {
     if (!events.length || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const oldest = events[events.length - 1].id;
-      const res = await authFetch(`/feed?limit=${PAGE}&cursor=${oldest}`);
+      const oldest = events[events.length - 1];
+      const res = await authFetch(
+        `/feed?limit=${PAGE_MORE}&cursor_ts=${encodeURIComponent(
+          oldest.happened_at
+        )}&cursor_id=${oldest.id}`
+      );
       const data = await res.json();
       setEvents((cur) => mergeEvents(cur, data.events));
-      if (data.events.length < PAGE) setReachedEnd(true);
+      if (data.events.length < PAGE_MORE) setReachedEnd(true);
     } catch {
       /* ignore */
     } finally {
@@ -264,7 +274,11 @@ function Feed({ me, authFetch }) {
         </article>
       ))}
       {events.length === 0 && (
-        <div className="empty big">No updates yet — actions on the portals will appear here.</div>
+        <div className="empty big">
+          {loaded
+            ? "No updates yet — actions on the portals will appear here."
+            : "Loading updates…"}
+        </div>
       )}
       {events.length > 0 && !reachedEnd && (
         <button className="load-older" onClick={loadOlder} disabled={loadingOlder}>
