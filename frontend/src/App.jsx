@@ -31,7 +31,6 @@ export default function App() {
       },
     }).then((r) => {
       if (r.status === 401) {
-        // Session expired — drop creds and bounce to login.
         localStorage.removeItem("token");
         localStorage.removeItem("me");
         setToken("");
@@ -59,7 +58,7 @@ export default function App() {
   if (!token || !me) {
     return <Login onLoggedIn={onLoggedIn} />;
   }
-  return <Messenger me={me} authFetch={authFetch} logout={logout} />;
+  return <Shell me={me} authFetch={authFetch} logout={logout} />;
 }
 
 function Login({ onLoggedIn }) {
@@ -94,7 +93,7 @@ function Login({ onLoggedIn }) {
   return (
     <div className="app center">
       <form onSubmit={submit} className="card login">
-        <h1>Internal Messaging</h1>
+        <h1>Kouzina Live Updates</h1>
         <p className="subtitle">Admins only. Sign in with your work email.</p>
         <input
           type="email"
@@ -118,15 +117,190 @@ function Login({ onLoggedIn }) {
   );
 }
 
-function Messenger({ me, authFetch, logout }) {
+function Shell({ me, authFetch, logout }) {
+  const [tab, setTab] = useState("feed");
+  return (
+    <div className="shell">
+      <header className="topbar">
+        <div className="brand">Kouzina</div>
+        <nav className="tabs">
+          <button
+            className={`tab ${tab === "feed" ? "active" : ""}`}
+            onClick={() => setTab("feed")}
+          >
+            Live Updates
+          </button>
+          <button
+            className={`tab ${tab === "dms" ? "active" : ""}`}
+            onClick={() => setTab("dms")}
+          >
+            Messages
+          </button>
+        </nav>
+        <div className="topbar-me">
+          <span className="me-name">{me.name}</span>
+          <button className="link" onClick={logout}>
+            sign out
+          </button>
+        </div>
+      </header>
+      {tab === "feed" ? (
+        <Feed me={me} authFetch={authFetch} />
+      ) : (
+        <Messenger me={me} authFetch={authFetch} />
+      )}
+    </div>
+  );
+}
+
+// ---- Live Updates feed ------------------------------------------------------
+
+function Feed({ me, authFetch }) {
+  const [events, setEvents] = useState([]);
+  const [openComments, setOpenComments] = useState(null); // event id
+
+  const load = useCallback(() => {
+    authFetch("/feed")
+      .then((r) => r.json())
+      .then((data) => setEvents(data.events))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 8000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function toggleLike(ev) {
+    // Optimistic flip; server response reconciles.
+    setEvents((cur) =>
+      cur.map((e) =>
+        e.id === ev.id
+          ? {
+              ...e,
+              liked_by_me: !e.liked_by_me,
+              like_count: e.like_count + (e.liked_by_me ? -1 : 1),
+            }
+          : e
+      )
+    );
+    try {
+      const res = await authFetch(`/feed/${ev.id}/like`, { method: "POST" });
+      const data = await res.json();
+      setEvents((cur) =>
+        cur.map((e) =>
+          e.id === ev.id
+            ? { ...e, liked_by_me: data.liked, like_count: data.like_count }
+            : e
+        )
+      );
+    } catch {
+      /* poll will reconcile */
+    }
+  }
+
+  return (
+    <main className="feed">
+      {events.map((ev) => (
+        <article key={ev.id} className="event card">
+          <div className="event-head">
+            <span className={`badge badge-${ev.portal.toLowerCase()}`}>{ev.portal}</span>
+            <strong className="event-actor">{ev.actor}</strong>
+            <span className="event-summary">{ev.summary}</span>
+            <span className="event-time">{timeAgo(ev.happened_at)}</span>
+          </div>
+          <div className="event-actions">
+            <button
+              className={`react ${ev.liked_by_me ? "liked" : ""}`}
+              onClick={() => toggleLike(ev)}
+            >
+              {ev.liked_by_me ? "♥" : "♡"} {ev.like_count || ""}
+            </button>
+            <button
+              className="react"
+              onClick={() =>
+                setOpenComments(openComments === ev.id ? null : ev.id)
+              }
+            >
+              💬 {ev.comment_count || ""}
+            </button>
+          </div>
+          {openComments === ev.id && (
+            <Comments eventId={ev.id} authFetch={authFetch} onPosted={load} />
+          )}
+        </article>
+      ))}
+      {events.length === 0 && (
+        <div className="empty big">No updates yet — actions on the portals will appear here.</div>
+      )}
+    </main>
+  );
+}
+
+function Comments({ eventId, authFetch, onPosted }) {
+  const [comments, setComments] = useState([]);
+  const [body, setBody] = useState("");
+
+  const load = useCallback(() => {
+    authFetch(`/feed/${eventId}/comments`)
+      .then((r) => r.json())
+      .then(setComments)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
+
+  useEffect(load, [load]);
+
+  async function post(e) {
+    e.preventDefault();
+    if (!body.trim()) return;
+    try {
+      await authFetch(`/feed/${eventId}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body: body.trim() }),
+      });
+      setBody("");
+      load();
+      onPosted();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <div className="comments">
+      {comments.map((c) => (
+        <div key={c.id} className="comment">
+          <strong>{c.admin_name}</strong>
+          <span>{c.body}</span>
+          <span className="comment-time">{timeAgo(c.created_at)}</span>
+        </div>
+      ))}
+      <form onSubmit={post} className="comment-form">
+        <input
+          className="grow"
+          placeholder="Add a comment…"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        <button type="submit">Post</button>
+      </form>
+    </div>
+  );
+}
+
+// ---- Direct messages ----------------------------------------------------------
+
+function Messenger({ me, authFetch }) {
   const [admins, setAdmins] = useState([]);
-  const [selected, setSelected] = useState(null); // recipient email
+  const [selected, setSelected] = useState(null);
   const [messages, setMessages] = useState([]);
   const [body, setBody] = useState("");
   const [error, setError] = useState("");
   const scrollRef = useRef(null);
 
-  // Load the people you can message once.
   useEffect(() => {
     authFetch("/admins")
       .then((r) => r.json())
@@ -143,7 +317,6 @@ function Messenger({ me, authFetch, logout }) {
       .catch(() => {});
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll the open thread so new messages appear.
   useEffect(() => {
     setMessages([]);
     if (!selected) return;
@@ -182,15 +355,6 @@ function Messenger({ me, authFetch, logout }) {
   return (
     <div className="messenger">
       <aside className="sidebar">
-        <div className="sidebar-head">
-          <div>
-            <div className="me-name">{me.name}</div>
-            <div className="me-email">{me.email}</div>
-          </div>
-          <button className="link" onClick={logout}>
-            sign out
-          </button>
-        </div>
         <div className="people">
           {admins.map((a) => (
             <button
