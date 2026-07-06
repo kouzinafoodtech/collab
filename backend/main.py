@@ -303,46 +303,104 @@ def _render_summary(action: str, summary: str, details: Optional[str]) -> str:
     return out
 
 
-def _ingest_pk_admin_audit(conn, last_id: int) -> tuple[list[dict], int]:
-    """Pull new rows from pkdb.admin_audit_log. Returns (events, new_watermark)."""
-    rows = conn.execute(
-        text(
-            "SELECT id, action, entity_type, entity_id, performed_by, details, created_at "
-            "FROM pkdb.admin_audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
-        ),
-        {"wm": last_id, "lim": INGEST_BATCH},
-    ).mappings().all()
-    events = []
-    watermark = last_id
-    for r in rows:
-        watermark = r["id"]
-        if r["action"] in EXCLUDED_ACTIONS:
-            continue
-        events.append(
-            {
-                "portal": "PK",
-                "source": "pkdb.admin_audit_log",
-                "source_id": r["id"],
-                "actor": r["performed_by"] or "Unknown",
-                "action": r["action"],
-                "summary": _summarize(r["action"], r["entity_type"], r["entity_id"]),
-                "details": r["details"],
-                "happened_at": r["created_at"],
-            }
-        )
-    return events, watermark
+def _init_sql(table: str, id_col: str = "id", time_col: str = "created_at") -> str:
+    """Watermark for a source's first-ever ingest: backfill at most the newest
+    100 rows AND nothing older than 14 days, so a dormant source starts empty
+    instead of dumping stale history on top of the feed."""
+    return (
+        "SELECT GREATEST("
+        f"COALESCE((SELECT MIN({id_col}) - 1 FROM "
+        f"(SELECT {id_col} FROM {table} ORDER BY {id_col} DESC LIMIT 100) t), 0), "
+        f"COALESCE((SELECT MAX({id_col}) FROM {table} "
+        f"WHERE {time_col} < NOW() - INTERVAL 14 DAY), 0))"
+    )
 
-# Source registry — add KAC / KFC here later (or push-based sources via an
-# ingest API). "init" caps the first-ever backfill to the newest ~100 rows so
-# a newly added source doesn't flood the feed with its entire history.
+
+# Source registry. Each source's SQL must return the normalized columns
+# (id, actor, action, entity_type, entity_id, details, created_at); a single
+# generic puller does the rest. Add a portal by appending an entry here.
 SOURCES = [
     {
         "name": "pkdb.admin_audit_log",
-        "puller": _ingest_pk_admin_audit,
-        "init": (
-            "SELECT COALESCE(MIN(id) - 1, 0) FROM "
-            "(SELECT id FROM pkdb.admin_audit_log ORDER BY id DESC LIMIT 100) t"
+        "portal": "PK",
+        "sql": (
+            "SELECT id, COALESCE(performed_by, 'Unknown') AS actor, action, "
+            "entity_type, entity_id, details, created_at "
+            "FROM pkdb.admin_audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
         ),
+        "init": _init_sql("pkdb.admin_audit_log"),
+    },
+    {
+        "name": "pkdb.coco_audit_log",
+        "portal": "PK",
+        "sql": (
+            "SELECT id, COALESCE(performed_by, 'Unknown') AS actor, action, "
+            "entity_type, entity_id, details, created_at "
+            "FROM pkdb.coco_audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
+        ),
+        "init": _init_sql("pkdb.coco_audit_log"),
+    },
+    {
+        "name": "pkdb.inventory_audit_log",
+        "portal": "PK",
+        "sql": (
+            "SELECT id, COALESCE(performed_by, 'Unknown') AS actor, action, "
+            "'item' AS entity_type, item_id AS entity_id, "
+            "JSON_OBJECT('item_name', item_name, "
+            "'quantity', JSON_OBJECT('from', quantity_before, 'to', quantity_after)"
+            ") AS details, created_at "
+            "FROM pkdb.inventory_audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
+        ),
+        "init": _init_sql("pkdb.inventory_audit_log"),
+    },
+    {
+        "name": "kouzinaos.audit_log",
+        "portal": "KAC",
+        "sql": (
+            "SELECT id, COALESCE(user_email, 'system') AS actor, action, "
+            "CASE WHEN target LIKE '%:%' THEN CONCAT(SUBSTRING_INDEX(target, ':', 1), "
+            "' #', SUBSTRING_INDEX(target, ':', -1)) ELSE target END AS entity_type, "
+            "NULL AS entity_id, "
+            "meta AS details, created_at "
+            "FROM kouzinaos.audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
+        ),
+        "init": _init_sql("kouzinaos.audit_log"),
+    },
+    {
+        "name": "wodb.audit_log",
+        "portal": "KFC",
+        "sql": (
+            "SELECT id, COALESCE(user_email, 'system') AS actor, action, "
+            "CASE WHEN target LIKE '%:%' THEN CONCAT(SUBSTRING_INDEX(target, ':', 1), "
+            "' #', SUBSTRING_INDEX(target, ':', -1)) ELSE target END AS entity_type, "
+            "NULL AS entity_id, "
+            "meta AS details, created_at "
+            "FROM wodb.audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
+        ),
+        "init": _init_sql("wodb.audit_log"),
+    },
+    {
+        "name": "wodb.noc_agent_activity_logs",
+        "portal": "KFC",
+        "sql": (
+            "SELECT id, CONCAT('NOC agent #', user_id) AS actor, "
+            "event_type AS action, 'kitchen' AS entity_type, "
+            "kitchen_id AS entity_id, meta AS details, occurred_at AS created_at "
+            "FROM wodb.noc_agent_activity_logs WHERE id > :wm ORDER BY id LIMIT :lim"
+        ),
+        "init": _init_sql("wodb.noc_agent_activity_logs", time_col="occurred_at"),
+    },
+    {
+        "name": "financedb.bill_activity_log",
+        "portal": "FIN",
+        "sql": (
+            "SELECT id, CONCAT('Admin #', COALESCE(performed_by, '?')) AS actor, "
+            "LOWER(action) AS action, 'bill' AS entity_type, bill_id AS entity_id, "
+            "JSON_OBJECT('status', JSON_OBJECT('from', old_status, 'to', new_status), "
+            "'notes', notes) AS details, performed_at AS created_at "
+            "FROM financedb.bill_activity_log WHERE id > :wm ORDER BY id LIMIT :lim"
+        ),
+        "init": _init_sql("financedb.bill_activity_log", time_col="performed_at"),
     },
 ]
 
@@ -406,15 +464,40 @@ def maybe_ingest():
                         start = conn.execute(text(source["init"])).scalar() or 0
                         state = IngestStateRow(source=source["name"], last_id=start)
                         db.add(state)
-                    events, watermark = source["puller"](conn, state.last_id or 0)
-                    for e in events:
+                    try:
+                        rows = conn.execute(
+                            text(source["sql"]),
+                            {"wm": state.last_id or 0, "lim": INGEST_BATCH},
+                        ).mappings().all()
+                    except Exception:
+                        # A source we can't read (missing grant, dropped table)
+                        # must not take down the whole feed.
+                        continue
+                    watermark = state.last_id or 0
+                    for r in rows:
+                        watermark = r["id"]
+                        if r["action"] in EXCLUDED_ACTIONS:
+                            continue
                         exists = (
                             db.query(FeedEventRow.id)
-                            .filter_by(source=e["source"], source_id=e["source_id"])
+                            .filter_by(source=source["name"], source_id=r["id"])
                             .first()
                         )
                         if not exists:
-                            db.add(FeedEventRow(**e))
+                            db.add(
+                                FeedEventRow(
+                                    portal=source["portal"],
+                                    source=source["name"],
+                                    source_id=r["id"],
+                                    actor=r["actor"] or "Unknown",
+                                    action=r["action"],
+                                    summary=_summarize(
+                                        r["action"], r["entity_type"], r["entity_id"]
+                                    ),
+                                    details=r["details"],
+                                    happened_at=r["created_at"],
+                                )
+                            )
                     state.last_id = watermark
                     state.last_run = now
                 db.commit()

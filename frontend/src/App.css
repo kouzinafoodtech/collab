@@ -199,6 +199,11 @@ button.link {
   color: #1e8e3e;
 }
 
+.badge-fin {
+  background: #f5eefc;
+  color: #8e44ad;
+}
+
 .event-actor {
   font-size: 0.95rem;
 }
