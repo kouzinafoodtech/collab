@@ -1462,7 +1462,7 @@ REDFLAG_RULES = [
         "sql": (
             "SELECT io.id AS ref, k.name AS entity, io.status AS state, "
             "COALESCE(io.invoice_generated_at, io.updated_at, io.created_at) AS since, "
-            "NULL AS contact_email "
+            "k.email AS contact_email "
             "FROM pkdb.internal_orders io "
             "LEFT JOIN pkdb.coco_kitchens k ON k.id = io.kitchen_id "
             "WHERE io.status IN ('approved','dispatched','invoiced','delivered') "
@@ -1551,6 +1551,21 @@ def _compute_rule(conn, rule: dict, now: datetime) -> list[dict]:
     return out
 
 
+def _parties_from_flags(flags: list[dict]) -> list[dict]:
+    """Distinct entities in a rule's breaches, with email + order count, so the
+    UI can select which parties (kitchens/partners) to remind."""
+    by = {}
+    for f in flags:
+        key = f["entity"]
+        p = by.setdefault(
+            key, {"entity": key, "email": (f.get("contact_email") or "").strip(), "count": 0}
+        )
+        p["count"] += 1
+        if not p["email"] and f.get("contact_email"):
+            p["email"] = f["contact_email"].strip()
+    return sorted(by.values(), key=lambda p: (-p["count"], p["entity"]))
+
+
 def _template_for(rule_key: str) -> dict:
     with SessionLocal() as db:
         row = db.get(RedflagTemplateRow, rule_key)
@@ -1589,10 +1604,11 @@ def redflags(admin: dict = Depends(current_admin)):
                         "key": rule["key"],
                         "label": rule["label"],
                         "ref_label": rule["ref_label"],
+                        "party_label": "Kitchen" if rule["key"] == "coco_grn" else "Partner",
                         "sla_days": rule["sla_days"],
                         "window_days": rule["window_days"],
                         "count": len(flags),
-                        "can_email_parties": rule["key"] == "partner_grn",
+                        "parties": _parties_from_flags(flags),
                         "flags": [
                             {
                                 "ref": f["ref"],
@@ -1615,12 +1631,18 @@ def redflags(admin: dict = Depends(current_admin)):
         rules_out = [
             {"key": "coco_grn",
              "label": "CoCo orders — GRN overdue (SLA: 3 days from approval)",
-             "ref_label": "CoCo order", "sla_days": 3, "window_days": 45,
-             "count": 2, "can_email_parties": False, "flags": demo},
+             "ref_label": "CoCo order", "party_label": "Kitchen",
+             "sla_days": 3, "window_days": 45, "count": 2,
+             "parties": [
+                 {"entity": "E-CITY", "email": "ecity@kftpl.com", "count": 1},
+                 {"entity": "KLP HSR", "email": "klphsr@kftpl.com", "count": 1},
+             ],
+             "flags": demo},
             {"key": "partner_grn",
              "label": "Partner orders — GRN overdue (SLA: 2 days from completion)",
-             "ref_label": "Partner order", "sla_days": 2, "window_days": 30,
-             "count": 1, "can_email_parties": True,
+             "ref_label": "Partner order", "party_label": "Partner",
+             "sla_days": 2, "window_days": 30, "count": 1,
+             "parties": [{"entity": "HUNMONI DUTTA", "email": "hunmoni@example.com", "count": 1}],
              "flags": [{"ref": 37474, "entity": "HUNMONI DUTTA", "state": "completed",
                         "since": _iso_utc(now - timedelta(days=4)), "days_overdue": 2}]},
         ]
@@ -1717,8 +1739,8 @@ class GroupSendIn(BaseModel):
     subject: str = Field(..., max_length=300)
     body: str = Field(..., max_length=6000)
     due_date: Optional[str] = None       # YYYY-MM-DD, fills {due_date}
-    recipients: list[str] = []           # admins / any emails for one combined mail
-    to_parties: bool = False             # partner_grn: also mail each partner their own
+    recipients: list[str] = []           # admins / any emails for one combined summary
+    party_emails: list[str] = []         # specific kitchens/partners to mail individually
     save_template: bool = True           # persist the edited template for the category
 
 
@@ -1780,16 +1802,18 @@ def send_group_reminder(
             "due_date": due,
         }
 
-    sent, messaged = 0, 0
+    sent, messaged, party_mails = 0, 0, 0
 
-    # 1) One combined email to the chosen recipients (admins / ops / custom).
+    # 1) One combined summary email to chosen recipients (admins / ops / custom).
     recips = [e.strip() for e in dict.fromkeys(payload.recipients) if e and "@" in e]
     if recips and email_enabled():
-        body = _render(payload.body, ctx_for(flags))
-        subject = _render(payload.subject, ctx_for(flags))
-        background_tasks.add_task(send_email, recips, subject, body)
+        background_tasks.add_task(
+            send_email,
+            recips,
+            _render(payload.subject, ctx_for(flags)),
+            _render(payload.body, ctx_for(flags)),
+        )
         sent += len(recips)
-    # in-app message to admin recipients so it shows on their wall
     admin_recips = [e for e in recips if is_active_admin(e)]
     if admin_recips:
         note = f"🚩 {rule['label']} — {len(flags)} pending. Reminder sent."
@@ -1799,20 +1823,23 @@ def send_group_reminder(
             db.commit()
             messaged = len(admin_recips)
 
-    # 2) Optionally email each partner their OWN orders (no cross-partner leak).
-    partner_mails = 0
-    if payload.to_parties and rule["key"] == "partner_grn" and email_enabled():
+    # 2) Email SPECIFIC parties (kitchens/partners) their OWN orders individually.
+    wanted = {e.strip().lower() for e in payload.party_emails if e and "@" in e}
+    if wanted and email_enabled():
         by_email: dict[str, list] = {}
         for f in flags:
             em = (f.get("contact_email") or "").strip()
-            if em and "@" in em:
+            if em and em.lower() in wanted:
                 by_email.setdefault(em, []).append(f)
         for em, subset in by_email.items():
-            body = _render(payload.body, ctx_for(subset))
-            subject = _render(payload.subject, ctx_for(subset))
-            background_tasks.add_task(send_email, [em], subject, body)
-            partner_mails += 1
-        sent += partner_mails
+            background_tasks.add_task(
+                send_email,
+                [em],
+                _render(payload.subject, ctx_for(subset)),
+                _render(payload.body, ctx_for(subset)),
+            )
+            party_mails += 1
+        sent += party_mails
 
     emit_live_event(
         who, "redflag_reminder_sent",
@@ -1824,7 +1851,7 @@ def send_group_reminder(
         "pending": len(flags),
         "emailed": sent,
         "messaged": messaged,
-        "partner_emails": partner_mails,
+        "party_emails": party_mails,
         "email_enabled": email_enabled(),
     }
 

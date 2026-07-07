@@ -672,9 +672,22 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
   });
   const [picked, setPicked] = useState([]);
   const [extra, setExtra] = useState("");
-  const [toParties, setToParties] = useState(false);
+  const [pickedParties, setPickedParties] = useState([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
+
+  const parties = rule.parties || [];
+  const emailableParties = parties.filter((p) => p.email);
+
+  function toggleParty(email) {
+    setPickedParties((cur) =>
+      cur.includes(email) ? cur.filter((e) => e !== email) : [...cur, email]
+    );
+  }
+  function toggleAllParties() {
+    const all = emailableParties.map((p) => p.email);
+    setPickedParties((cur) => (cur.length === all.length ? [] : all));
+  }
 
   function toggle(email) {
     setPicked((cur) =>
@@ -715,8 +728,8 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
       setStatus(res && res.ok ? "Template saved ✓" : "Save failed");
       return;
     }
-    if (recipients.length === 0 && !toParties) {
-      setStatus("Pick recipients or 'email each partner'");
+    if (recipients.length === 0 && pickedParties.length === 0) {
+      setStatus(`Select recipients or ${rule.party_label?.toLowerCase() || "parties"}`);
       return;
     }
     setStatus("sending");
@@ -728,7 +741,7 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
         body,
         due_date: due,
         recipients,
-        to_parties: toParties,
+        party_emails: pickedParties,
         save_template: true,
       }),
     }).catch(() => null);
@@ -737,10 +750,10 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
       setStatus(
         d.emailed
           ? `Sent ${d.emailed} email${d.emailed > 1 ? "s" : ""}` +
-              (d.partner_emails ? ` (${d.partner_emails} to partners)` : "")
+              (d.party_emails ? ` (${d.party_emails} to ${rule.party_label?.toLowerCase()}s)` : "")
           : "Saved — but email is not configured"
       );
-      setTimeout(onClose, 1400);
+      setTimeout(onClose, 1600);
     } else {
       setStatus("Failed — try again");
     }
@@ -807,16 +820,48 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
             />
           </div>
 
-          {rule.can_email_parties && (
-            <label className="flag-person parties-toggle">
-              <input
-                type="checkbox"
-                checked={toParties}
-                onChange={(e) => setToParties(e.target.checked)}
-              />
-              Also email <strong>&nbsp;each partner&nbsp;</strong> their own order(s)
-            </label>
-          )}
+          <div className="fld">
+            <span>
+              Email {rule.party_label?.toLowerCase()}s individually
+              <span className="muted"> — each gets only their own orders</span>
+            </span>
+            {emailableParties.length > 0 ? (
+              <>
+                <label className="flag-person party-all">
+                  <input
+                    type="checkbox"
+                    checked={
+                      pickedParties.length === emailableParties.length &&
+                      emailableParties.length > 0
+                    }
+                    onChange={toggleAllParties}
+                  />
+                  <strong>Select all {emailableParties.length} {rule.party_label?.toLowerCase()}s</strong>
+                </label>
+                <div className="flag-people">
+                  {parties.map((p) => (
+                    <label
+                      key={p.entity}
+                      className={`flag-person ${p.email ? "" : "no-email"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        disabled={!p.email}
+                        checked={pickedParties.includes(p.email)}
+                        onChange={() => p.email && toggleParty(p.email)}
+                      />
+                      <span className="party-name">{p.entity}</span>
+                      <span className="party-meta muted">
+                        {p.email ? `${p.email} · ${p.count}` : "no email on file"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="muted">No {rule.party_label?.toLowerCase()} emails on file.</div>
+            )}
+          </div>
 
           <div className="preview">
             <div className="muted preview-label">Preview</div>

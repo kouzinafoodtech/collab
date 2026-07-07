@@ -1336,9 +1336,30 @@ button.link {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
-.parties-toggle {
-  font-size: 0.9rem;
-  padding: 8px 0;
+.party-all {
+  font-size: 0.88rem;
+  padding: 4px 2px;
+}
+
+.flag-person.no-email {
+  opacity: 0.55;
+}
+
+.party-name {
+  font-weight: 600;
+}
+
+.party-meta {
+  margin-left: auto;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+
+.flag-person {
+  justify-content: flex-start;
 }
 
 .preview {
