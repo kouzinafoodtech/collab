@@ -186,6 +186,7 @@ function Shell({ me, authFetch, logout }) {
   const isSuper = (me.email || "").toLowerCase() === SUPERADMIN;
   const [view, setView] = useState("live"); // live | messages | dash
   const [person, setPerson] = useState(null); // {actor, email, count}
+  const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
   const [board, setBoard] = useState([]);
   const [admins, setAdmins] = useState([]);
 
@@ -294,9 +295,22 @@ function Shell({ me, authFetch, logout }) {
             board={board}
             admins={admins}
             selected={person?.actor}
-            onSelect={(p) => openPerson(p)}
-            onClear={() => setPerson(null)}
+            open={peopleOpen}
+            onCloseDrawer={() => setPeopleOpen(false)}
+            onSelect={(p) => {
+              openPerson(p);
+              setPeopleOpen(false);
+            }}
+            onClear={() => {
+              setPerson(null);
+              setPeopleOpen(false);
+            }}
           />
+          {!peopleOpen && (
+            <button className="people-fab" onClick={() => setPeopleOpen(true)}>
+              👥 People
+            </button>
+          )}
         </div>
       )}
       {view === "messages" && (
@@ -322,7 +336,7 @@ function PersonRow({ entry, selected, onClick, rank }) {
   );
 }
 
-function Sidebar({ board, admins, selected, onSelect, onClear }) {
+function Sidebar({ board, admins, selected, open, onCloseDrawer, onSelect, onClear }) {
   const [moreLead, setMoreLead] = useState(false);
   const [moreAdmins, setMoreAdmins] = useState(false);
 
@@ -339,7 +353,13 @@ function Sidebar({ board, admins, selected, onSelect, onClear }) {
   const shownAdmins = adminEntries.slice(0, moreAdmins ? adminEntries.length : 10);
 
   return (
-    <aside className="leaderboard">
+    <aside className={`leaderboard ${open ? "open" : ""}`}>
+      <div className="lb-drawer-head">
+        <span>People</span>
+        <button className="link" onClick={onCloseDrawer}>
+          ✕ close
+        </button>
+      </div>
       <div className="lb-section">
         <div className="lb-title">Leadership · 12h</div>
         <div className="lb-list">

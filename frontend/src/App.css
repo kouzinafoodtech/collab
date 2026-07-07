@@ -209,6 +209,14 @@ button.link {
 }
 
 /* ---- Leaderboard ---- */
+.lb-drawer-head {
+  display: none;
+}
+
+.people-fab {
+  display: none;
+}
+
 .leaderboard {
   border-left: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.65);
@@ -1147,48 +1155,44 @@ button.link {
     order: 2;
   }
 
+  /* People live behind a floating button + full-screen drawer on mobile,
+     so the feed is the first thing on screen. */
   .leaderboard {
-    order: 1;
-    border-left: none;
-    border-bottom: 1px solid var(--line);
-    padding: 10px 12px;
-    overflow-y: visible;
-  }
-
-  .lb-list {
-    flex-direction: row;
-    overflow-x: auto;
-    gap: 8px;
-    padding-bottom: 4px;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .lb-item {
-    flex-direction: column;
-    gap: 4px;
-    min-width: 76px;
-    padding: 8px 6px;
-    border: 1px solid var(--line);
-    background: #fff;
-  }
-
-  .lb-rank {
     display: none;
   }
 
-  .lb-name {
-    font-size: 0.72rem;
-    max-width: 72px;
-    text-align: center;
+  .leaderboard.open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: #fff;
+    border-left: none;
+    padding: 16px;
+    overflow-y: auto;
   }
 
-  .lb-count {
-    font-size: 0.68rem;
-    padding: 1px 8px;
+  .lb-drawer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 800;
+    font-size: 1.05rem;
+    margin-bottom: 12px;
   }
 
-  .lb-title {
-    padding-bottom: 8px;
+  .people-fab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    position: fixed;
+    right: 16px;
+    bottom: 18px;
+    z-index: 55;
+    border-radius: 999px;
+    padding: 12px 18px;
+    font-weight: 700;
+    box-shadow: 0 8px 24px rgba(79, 70, 229, 0.35);
   }
 
   .topbar {
