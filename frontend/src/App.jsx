@@ -473,21 +473,51 @@ const STATUS_OPTS = [
   ["complete", "Complete"],
 ];
 
+const PROG_PAGE = 10;
+
 function Programs({ admins, authFetch }) {
   const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
-  const [form, setForm] = useState({ name: "", owner_email: "", eta: "" });
+  const [form, setForm] = useState({
+    name: "",
+    objective: "",
+    description: "",
+    owner_email: "",
+    eta: "",
+  });
 
-  const load = useCallback(() => {
-    authFetch("/programs")
+  const load = useCallback((count) => {
+    // (Re)load the first `count` programs — used for initial load and after
+    // any mutation so the visible window stays fresh.
+    authFetch(`/programs?limit=${Math.min(Math.max(count, PROG_PAGE), 50)}`)
       .then((r) => r.json())
-      .then(setItems)
+      .then((data) => {
+        setItems(data.programs);
+        setTotal(data.total);
+      })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(load, [load]);
+  useEffect(() => load(PROG_PAGE), [load]);
+
+  async function loadMore() {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const res = await authFetch(`/programs?limit=${PROG_PAGE}&offset=${items.length}`);
+      const data = await res.json();
+      setItems((cur) => [...cur, ...data.programs]);
+      setTotal(data.total);
+    } catch {
+      /* ignore */
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function create(e) {
     e.preventDefault();
@@ -496,14 +526,16 @@ function Programs({ admins, authFetch }) {
       method: "POST",
       body: JSON.stringify({
         name: form.name.trim(),
+        objective: form.objective || null,
+        description: form.description || null,
         owner_email: form.owner_email || null,
         eta: form.eta || null,
       }),
     }).catch(() => null);
     if (res && res.ok) {
-      setForm({ name: "", owner_email: "", eta: "" });
+      setForm({ name: "", objective: "", description: "", owner_email: "", eta: "" });
       setShowNew(false);
-      load();
+      load(items.length + 1);
     }
   }
 
@@ -512,7 +544,7 @@ function Programs({ admins, authFetch }) {
       method: "PATCH",
       body: JSON.stringify(body),
     }).catch(() => null);
-    if (res && res.ok) load();
+    if (res && res.ok) load(items.length);
   }
 
   const visible = items.filter((p) => showInactive || p.active);
@@ -533,31 +565,43 @@ function Programs({ admins, authFetch }) {
         </label>
       </div>
       {showNew && (
-        <form className="card composer-card" onSubmit={create}>
+        <form className="card prog-form" onSubmit={create}>
           <input
-            className="grow"
             autoFocus
             placeholder="Program name…"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
-          <select
-            value={form.owner_email}
-            onChange={(e) => setForm({ ...form, owner_email: e.target.value })}
-          >
-            <option value="">Owner…</option>
-            {admins.map((a) => (
-              <option key={a.email} value={a.email}>
-                {a.name || a.email}
-              </option>
-            ))}
-          </select>
           <input
-            type="date"
-            value={form.eta}
-            onChange={(e) => setForm({ ...form, eta: e.target.value })}
+            placeholder="Objective — what does success look like?"
+            value={form.objective}
+            onChange={(e) => setForm({ ...form, objective: e.target.value })}
           />
-          <button type="submit">Create</button>
+          <textarea
+            rows={3}
+            placeholder="Description — context, scope, links…"
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+          />
+          <div className="prog-form-row">
+            <select
+              value={form.owner_email}
+              onChange={(e) => setForm({ ...form, owner_email: e.target.value })}
+            >
+              <option value="">Owner…</option>
+              {admins.map((a) => (
+                <option key={a.email} value={a.email}>
+                  {a.name || a.email}
+                </option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={form.eta}
+              onChange={(e) => setForm({ ...form, eta: e.target.value })}
+            />
+            <button type="submit">Create</button>
+          </div>
         </form>
       )}
       {visible.map((p) => (
@@ -565,6 +609,13 @@ function Programs({ admins, authFetch }) {
       ))}
       {visible.length === 0 && (
         <div className="empty big">No programs yet — create the first one.</div>
+      )}
+      {items.length < total && (
+        <button className="load-older" onClick={loadMore} disabled={loadingMore}>
+          {loadingMore
+            ? "Loading…"
+            : `Load more programs (${total - items.length} more)`}
+        </button>
       )}
     </main>
   );
@@ -575,6 +626,8 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
   const [showUpdates, setShowUpdates] = useState(false);
   const [edit, setEdit] = useState({
     name: p.name,
+    objective: p.objective || "",
+    description: p.description || "",
     owner_email: p.owner_email || "",
     eta: p.eta || "",
   });
@@ -585,6 +638,8 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
     e.preventDefault();
     onPatch(p.id, {
       name: edit.name.trim(),
+      objective: edit.objective,
+      description: edit.description,
       owner_email: edit.owner_email,
       eta: edit.eta || null,
     });
@@ -608,6 +663,8 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
           ))}
         </select>
       </div>
+      {p.objective && <div className="prog-objective">🎯 {p.objective}</div>}
+      {p.description && <div className="prog-desc">{p.description}</div>}
       <div className="prog-meta">
         {p.owner_name ? (
           <span className="prog-owner">
@@ -638,29 +695,42 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
         </span>
       </div>
       {editing && (
-        <form className="composer-card prog-edit" onSubmit={saveEdit}>
+        <form className="prog-form prog-edit" onSubmit={saveEdit}>
           <input
-            className="grow"
             value={edit.name}
+            placeholder="Program name…"
             onChange={(e) => setEdit({ ...edit, name: e.target.value })}
           />
-          <select
-            value={edit.owner_email}
-            onChange={(e) => setEdit({ ...edit, owner_email: e.target.value })}
-          >
-            <option value="">Owner…</option>
-            {admins.map((a) => (
-              <option key={a.email} value={a.email}>
-                {a.name || a.email}
-              </option>
-            ))}
-          </select>
           <input
-            type="date"
-            value={edit.eta}
-            onChange={(e) => setEdit({ ...edit, eta: e.target.value })}
+            value={edit.objective}
+            placeholder="Objective…"
+            onChange={(e) => setEdit({ ...edit, objective: e.target.value })}
           />
-          <button type="submit">Save</button>
+          <textarea
+            rows={3}
+            value={edit.description}
+            placeholder="Description…"
+            onChange={(e) => setEdit({ ...edit, description: e.target.value })}
+          />
+          <div className="prog-form-row">
+            <select
+              value={edit.owner_email}
+              onChange={(e) => setEdit({ ...edit, owner_email: e.target.value })}
+            >
+              <option value="">Owner…</option>
+              {admins.map((a) => (
+                <option key={a.email} value={a.email}>
+                  {a.name || a.email}
+                </option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={edit.eta}
+              onChange={(e) => setEdit({ ...edit, eta: e.target.value })}
+            />
+            <button type="submit">Save</button>
+          </div>
         </form>
       )}
       {showUpdates && <ProgramUpdates programId={p.id} authFetch={authFetch} />}

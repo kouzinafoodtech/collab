@@ -141,6 +141,8 @@ class ProgramRow(Base):
     __tablename__ = "programs"
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)
+    objective = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
     owner_email = Column(String(255), nullable=True)
     owner_name = Column(String(255), nullable=True)
     eta = Column(DateTime(timezone=True), nullable=True)
@@ -200,6 +202,8 @@ if IS_MYSQL:
         for ddl in (
             "ALTER TABLE messages ADD COLUMN is_private TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN parent_id INT NULL",
+            "ALTER TABLE programs ADD COLUMN objective TEXT NULL",
+            "ALTER TABLE programs ADD COLUMN description TEXT NULL",
         ):
             try:
                 conn.execute(text(ddl))
@@ -1370,12 +1374,16 @@ def send_message(body: MessageIn, admin: dict = Depends(current_admin)):
 
 class ProgramIn(BaseModel):
     name: str = Field(..., min_length=2, max_length=255)
+    objective: Optional[str] = Field(default=None, max_length=2000)
+    description: Optional[str] = Field(default=None, max_length=5000)
     owner_email: Optional[str] = None
     eta: Optional[str] = None  # YYYY-MM-DD
 
 
 class ProgramPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    objective: Optional[str] = Field(default=None, max_length=2000)
+    description: Optional[str] = Field(default=None, max_length=5000)
     owner_email: Optional[str] = None
     eta: Optional[str] = None
     status: Optional[str] = None
@@ -1402,6 +1410,8 @@ def _serialize_program(p: ProgramRow, updates_count: int = 0) -> dict:
     return {
         "id": p.id,
         "name": p.name,
+        "objective": p.objective,
+        "description": p.description,
         "owner_email": p.owner_email,
         "owner_name": p.owner_name,
         "eta": p.eta.date().isoformat() if p.eta else None,
@@ -1413,15 +1423,32 @@ def _serialize_program(p: ProgramRow, updates_count: int = 0) -> dict:
 
 
 @api.get("/programs")
-def list_programs(admin: dict = Depends(current_admin)):
+def list_programs(
+    limit: int = Query(default=10, le=50),
+    offset: int = Query(default=0, ge=0),
+    admin: dict = Depends(current_admin),
+):
     with SessionLocal() as db:
-        rows = db.query(ProgramRow).order_by(ProgramRow.active.desc(), ProgramRow.eta.asc()).all()
-        counts = dict(
-            db.query(ProgramUpdateRow.program_id, func.count()).group_by(
-                ProgramUpdateRow.program_id
-            )
+        total = db.query(ProgramRow).count()
+        rows = (
+            db.query(ProgramRow)
+            .order_by(ProgramRow.active.desc(), ProgramRow.eta.asc(), ProgramRow.id.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
         )
-    return [_serialize_program(p, counts.get(p.id, 0)) for p in rows]
+        ids = [p.id for p in rows]
+        counts = {}
+        if ids:
+            counts = dict(
+                db.query(ProgramUpdateRow.program_id, func.count())
+                .filter(ProgramUpdateRow.program_id.in_(ids))
+                .group_by(ProgramUpdateRow.program_id)
+            )
+    return {
+        "programs": [_serialize_program(p, counts.get(p.id, 0)) for p in rows],
+        "total": total,
+    }
 
 
 @api.post("/programs", status_code=201)
@@ -1430,6 +1457,8 @@ def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
     with SessionLocal() as db:
         row = ProgramRow(
             name=payload.name.strip(),
+            objective=(payload.objective or "").strip() or None,
+            description=(payload.description or "").strip() or None,
             owner_email=owner_email,
             owner_name=owner_name,
             eta=_parse_eta(payload.eta),
@@ -1487,6 +1516,12 @@ def patch_program(program_id: int, payload: ProgramPatch, admin: dict = Depends(
         edited = False
         if payload.name is not None and payload.name.strip() != row.name:
             row.name = payload.name.strip()
+            edited = True
+        if payload.objective is not None and payload.objective.strip() != (row.objective or ""):
+            row.objective = payload.objective.strip() or None
+            edited = True
+        if payload.description is not None and payload.description.strip() != (row.description or ""):
+            row.description = payload.description.strip() or None
             edited = True
         if payload.owner_email is not None:
             row.owner_email, row.owner_name = _owner_fields(payload.owner_email or None)
