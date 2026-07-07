@@ -1422,6 +1422,31 @@ function Wall({ email, name, authFetch, readOnly = false }) {
     }
   }
 
+  async function toggleLike(id) {
+    setMessages((cur) =>
+      cur.map((m) =>
+        m.id === id
+          ? {
+              ...m,
+              liked_by_me: !m.liked_by_me,
+              like_count: (m.like_count || 0) + (m.liked_by_me ? -1 : 1),
+            }
+          : m
+      )
+    );
+    try {
+      const res = await authFetch(`/messages/${id}/like`, { method: "POST" });
+      const d = await res.json();
+      setMessages((cur) =>
+        cur.map((m) =>
+          m.id === id ? { ...m, liked_by_me: d.liked, like_count: d.like_count } : m
+        )
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
   return (
     <div className="wall">
       {!readOnly && (
@@ -1451,6 +1476,12 @@ function Wall({ email, name, authFetch, readOnly = false }) {
             </span>
             <span className="wall-body">{m.body}</span>
             <span className="wall-time">{timeAgo(m.created_at)}</span>
+            <button
+              className={`react xs ${m.liked_by_me ? "liked" : ""}`}
+              onClick={() => toggleLike(m.id)}
+            >
+              {m.liked_by_me ? "♥" : "♡"} {m.like_count || ""}
+            </button>
           </div>
         ))}
         {messages.length === 0 && (
@@ -1518,6 +1549,31 @@ function MessagesHub({ me, admins, authFetch }) {
       setReplyBody("");
       setReplyTo(null);
       load();
+    }
+  }
+
+  async function toggleLike(id) {
+    setMsgs((cur) =>
+      cur.map((m) =>
+        m.id === id
+          ? {
+              ...m,
+              liked_by_me: !m.liked_by_me,
+              like_count: (m.like_count || 0) + (m.liked_by_me ? -1 : 1),
+            }
+          : m
+      )
+    );
+    try {
+      const res = await authFetch(`/messages/${id}/like`, { method: "POST" });
+      const d = await res.json();
+      setMsgs((cur) =>
+        cur.map((m) =>
+          m.id === id ? { ...m, liked_by_me: d.liked, like_count: d.like_count } : m
+        )
+      );
+    } catch {
+      /* poll reconciles */
     }
   }
 
@@ -1595,6 +1651,12 @@ function MessagesHub({ me, admins, authFetch }) {
               {m.is_private && <span className="lock">🔒</span>}
               <span className="wall-body">{m.body}</span>
               <span className="wall-time">{timeAgo(m.created_at)}</span>
+              <button
+                className={`react xs ${m.liked_by_me ? "liked" : ""}`}
+                onClick={() => toggleLike(m.id)}
+              >
+                {m.liked_by_me ? "♥" : "♡"} {m.like_count || ""}
+              </button>
             </div>
             {(kids[m.id] || []).map((c) => (
               <div
@@ -1610,6 +1672,12 @@ function MessagesHub({ me, admins, authFetch }) {
                 </span>
                 <span className="wall-body">{c.body}</span>
                 <span className="wall-time">{timeAgo(c.created_at)}</span>
+                <button
+                  className={`react xs ${c.liked_by_me ? "liked" : ""}`}
+                  onClick={() => toggleLike(c.id)}
+                >
+                  {c.liked_by_me ? "♥" : "♡"} {c.like_count || ""}
+                </button>
               </div>
             ))}
             {replyTo === m.id ? (

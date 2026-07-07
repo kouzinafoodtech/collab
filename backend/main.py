@@ -185,6 +185,15 @@ class LiveLoginRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class MessageLikeRow(Base):
+    __tablename__ = "message_likes"
+    __table_args__ = (UniqueConstraint("message_id", "admin_email", name="uq_msg_admin"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message_id = Column(Integer, nullable=False, index=True)
+    admin_email = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class RedflagTemplateRow(Base):
     __tablename__ = "redflag_templates"
     rule_key = Column(String(64), primary_key=True)
@@ -891,6 +900,8 @@ def get_wall(email: str, admin: dict = Depends(current_admin)):
             .all()
         )
     names = resolve_names({r.sender for r in rows})
+    with SessionLocal() as db:
+        counts, mine = _msg_like_info(db, [r.id for r in rows], admin["email"])
     return [
         {
             "id": r.id,
@@ -898,6 +909,8 @@ def get_wall(email: str, admin: dict = Depends(current_admin)):
             "sender_name": names.get(r.sender) or r.sender.split("@")[0],
             "body": r.body,
             "created_at": _iso_utc(r.created_at),
+            "like_count": counts.get(r.id, 0),
+            "liked_by_me": r.id in mine,
         }
         for r in rows
     ]
@@ -955,9 +968,29 @@ def person(actor: str, admin: dict = Depends(current_admin)):
 
 # ---- Messages hub (public tree + private) ------------------------------------
 
-def _serialize_msgs(rows) -> list[dict]:
+def _msg_like_info(db, ids: list[int], me_email: str):
+    counts, mine = {}, set()
+    if ids:
+        for mid, c in (
+            db.query(MessageLikeRow.message_id, func.count())
+            .filter(MessageLikeRow.message_id.in_(ids))
+            .group_by(MessageLikeRow.message_id)
+        ):
+            counts[mid] = c
+        mine = {
+            r[0]
+            for r in db.query(MessageLikeRow.message_id).filter(
+                MessageLikeRow.message_id.in_(ids),
+                MessageLikeRow.admin_email == me_email,
+            )
+        }
+    return counts, mine
+
+
+def _serialize_msgs(db, rows, me_email: str) -> list[dict]:
     emails = {r.sender for r in rows} | {r.recipient for r in rows}
     names = resolve_names(emails)
+    counts, mine = _msg_like_info(db, [r.id for r in rows], me_email)
     return [
         {
             "id": r.id,
@@ -969,6 +1002,8 @@ def _serialize_msgs(rows) -> list[dict]:
             "is_private": bool(r.is_private),
             "body": r.body,
             "created_at": _iso_utc(r.created_at),
+            "like_count": counts.get(r.id, 0),
+            "liked_by_me": r.id in mine,
         }
         for r in rows
     ]
@@ -985,7 +1020,7 @@ def messages_public(admin: dict = Depends(current_admin)):
             .limit(150)
             .all()
         )
-    return _serialize_msgs(rows)
+        return _serialize_msgs(db, rows, admin["email"])
 
 
 @api.get("/messages/private")
@@ -1003,7 +1038,28 @@ def messages_private(admin: dict = Depends(current_admin)):
             .limit(150)
             .all()
         )
-    return _serialize_msgs(rows)
+        return _serialize_msgs(db, rows, me_email)
+
+
+@api.post("/messages/{message_id}/like")
+def toggle_message_like(message_id: int, admin: dict = Depends(current_admin)):
+    with SessionLocal() as db:
+        if not db.get(MessageRow, message_id):
+            raise HTTPException(status_code=404, detail="Message not found")
+        existing = (
+            db.query(MessageLikeRow)
+            .filter_by(message_id=message_id, admin_email=admin["email"])
+            .first()
+        )
+        if existing:
+            db.delete(existing)
+            liked = False
+        else:
+            db.add(MessageLikeRow(message_id=message_id, admin_email=admin["email"]))
+            liked = True
+        db.commit()
+        count = db.query(MessageLikeRow).filter_by(message_id=message_id).count()
+    return {"liked": liked, "like_count": count}
 
 
 class SendIn(BaseModel):

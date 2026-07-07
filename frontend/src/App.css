@@ -1639,6 +1639,25 @@ button.link {
   background: #fdf0f5;
 }
 
+/* Inline like on message rows */
+.react.xs {
+  padding: 1px 9px;
+  font-size: 0.78rem;
+  border-radius: 999px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.wall-msg .react.xs {
+  margin-left: 4px;
+  align-self: center;
+}
+
+.wall-msg.reply .react.xs,
+.wall-msg .react.xs {
+  background: rgba(255, 255, 255, 0.7);
+}
+
 .comments {
   margin-top: 12px;
   border-top: 1px solid #f0f0f0;
