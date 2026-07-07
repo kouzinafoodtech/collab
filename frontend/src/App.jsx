@@ -35,6 +35,7 @@ function initials(name) {
 }
 
 function actionKind(action) {
+  if (/fail|error|reject|cancel/.test(action)) return "alert";
   if (/stock|inventory|quantity|csv/.test(action)) return "stock";
   if (/order|grn|dispatch|deliver|load/.test(action)) return "order";
   if (/expense|bill|invoice|paid|payment|payout|credit/.test(action)) return "money";

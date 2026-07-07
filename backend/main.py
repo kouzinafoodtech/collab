@@ -417,6 +417,16 @@ SOURCES = [
         "init": _init_sql("pkdb.inventory_audit_log"),
     },
     {
+        "name": "financedb.admin_audit_log",
+        "portal": "FIN",
+        "sql": (
+            "SELECT id, COALESCE(performed_by, 'Unknown') AS actor, action, "
+            "entity_type, entity_id, details, created_at "
+            "FROM financedb.admin_audit_log WHERE id > :wm ORDER BY id LIMIT :lim"
+        ),
+        "init": _init_sql("financedb.admin_audit_log"),
+    },
+    {
         "name": "financedb.bill_activity_log",
         "portal": "FIN",
         "sql": (
@@ -965,7 +975,7 @@ def dashboard(admin: dict = Depends(current_admin)):
         "by_person": by_person,
         "feed_by_day": feed_by_day,
         "pk_usage": _logins_per_day("pkdb.admin_audit_log"),
-        "kfc_usage": _logins_per_day("wodb.audit_log"),
+        "kfc_usage": _logins_per_day("financedb.kfc_access_log"),
         "adoption": adoption,
     }
 

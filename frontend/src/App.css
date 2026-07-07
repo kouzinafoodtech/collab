@@ -851,6 +851,16 @@ button.link {
   border-left-color: #cbd5e1;
 }
 
+.kind-alert {
+  border-left-color: #ef4444;
+  background: #fffafa;
+}
+
+.chip-alert {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 .event-row {
   display: flex;
   gap: 12px;
