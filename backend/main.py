@@ -240,31 +240,66 @@ def _excluded(email: Optional[str]) -> bool:
     return (email or "").lower() in EXCLUDED_ADMIN_EMAILS
 
 
+def _smtp_config() -> Optional[dict]:
+    """SMTP settings, preferring explicit env vars, then reusing PartnerKart's
+    own mailer from pkdb.smtp_settings (same MySQL server). Reading it live
+    means no credentials are copied anywhere and PK key rotations are picked up
+    automatically."""
+    host = os.environ.get("SMTP_HOST")
+    if host:
+        return {
+            "host": host,
+            "port": int(os.environ.get("SMTP_PORT", "587")),
+            "user": os.environ.get("SMTP_USER"),
+            "password": os.environ.get("SMTP_PASS"),
+            "from_email": os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER"),
+            "from_name": os.environ.get("SMTP_FROM_NAME", "Kouzina Live"),
+        }
+    if IS_MYSQL:
+        try:
+            with engine.connect() as conn:
+                r = conn.execute(
+                    text(
+                        "SELECT smtp_host, smtp_port, smtp_username, smtp_password, "
+                        "from_email, from_name FROM pkdb.smtp_settings "
+                        "WHERE smtp_host IS NOT NULL ORDER BY id DESC LIMIT 1"
+                    )
+                ).mappings().first()
+            if r and r["smtp_host"]:
+                return {
+                    "host": r["smtp_host"],
+                    "port": r["smtp_port"] or 587,
+                    "user": r["smtp_username"],
+                    "password": r["smtp_password"],
+                    "from_email": r["from_email"] or r["smtp_username"],
+                    # Send under the Kouzina Live name but PK's verified address.
+                    "from_name": "Kouzina Live",
+                }
+        except Exception:
+            pass
+    return None
+
+
 def email_enabled() -> bool:
-    return bool(os.environ.get("SMTP_HOST"))
+    return _smtp_config() is not None
 
 
 def send_email(recipients: list[str], subject: str, body: str) -> bool:
-    """Best-effort email via SMTP (configure SMTP_HOST/PORT/USER/PASS/FROM).
-    Disabled and a no-op until those env vars are set."""
-    host = os.environ.get("SMTP_HOST")
-    if not host or not recipients:
+    """Best-effort email via the resolved SMTP config. No-op if none available."""
+    cfg = _smtp_config()
+    if not cfg or not recipients:
         return False
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    user = os.environ.get("SMTP_USER")
-    pw = os.environ.get("SMTP_PASS")
-    sender = os.environ.get("SMTP_FROM", user or "no-reply@kftpl.com")
     try:
         msg = EmailMessage()
-        msg["From"] = sender
+        msg["From"] = f'{cfg["from_name"]} <{cfg["from_email"]}>'
         msg["To"] = ", ".join(recipients)
         msg["Subject"] = subject
         msg.set_content(body)
         ctx = ssl.create_default_context()
-        with smtplib.SMTP(host, port, timeout=15) as s:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=20) as s:
             s.starttls(context=ctx)
-            if user:
-                s.login(user, pw)
+            if cfg["user"]:
+                s.login(cfg["user"], cfg["password"])
             s.send_message(msg)
         return True
     except Exception:
