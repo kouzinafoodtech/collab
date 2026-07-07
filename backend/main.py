@@ -846,8 +846,9 @@ def me(admin: dict = Depends(current_admin)):
 
 @api.get("/admins")
 def admins(admin: dict = Depends(current_admin)):
-    """Active admins you can message (everyone but yourself)."""
-    return [a for a in list_active_admins() if a["email"] != admin["email"]]
+    """All active admins (including you — the DM composer hides self client-side,
+    but you should be selectable for red-flag reminders / testing)."""
+    return list_active_admins()
 
 
 @api.get("/leaderboard")
