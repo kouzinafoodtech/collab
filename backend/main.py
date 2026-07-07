@@ -185,6 +185,15 @@ class LiveLoginRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class RedflagTemplateRow(Base):
+    __tablename__ = "redflag_templates"
+    rule_key = Column(String(64), primary_key=True)
+    subject = Column(Text, nullable=True)
+    body = Column(Text, nullable=True)
+    updated_by = Column(String(255), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class IngestStateRow(Base):
     __tablename__ = "ingest_state"
     source = Column(String(64), primary_key=True)
@@ -1452,13 +1461,14 @@ REDFLAG_RULES = [
         "window_days": 45,
         "sql": (
             "SELECT io.id AS ref, k.name AS entity, io.status AS state, "
-            "COALESCE(io.invoice_generated_at, io.updated_at, io.created_at) AS since "
+            "COALESCE(io.invoice_generated_at, io.updated_at, io.created_at) AS since, "
+            "NULL AS contact_email "
             "FROM pkdb.internal_orders io "
             "LEFT JOIN pkdb.coco_kitchens k ON k.id = io.kitchen_id "
             "WHERE io.status IN ('approved','dispatched','invoiced','delivered') "
             "AND io.grn_completed_at IS NULL "
             "AND COALESCE(io.invoice_generated_at, io.updated_at, io.created_at) < :cutoff "
-            "AND io.created_at >= :window ORDER BY since ASC LIMIT 100"
+            "AND io.created_at >= :window ORDER BY since DESC LIMIT 100"
         ),
     },
     {
@@ -1469,17 +1479,93 @@ REDFLAG_RULES = [
         "window_days": 30,
         "sql": (
             "SELECT o.id AS ref, p.name AS entity, o.status AS state, "
-            "o.updated_at AS since "
+            "o.updated_at AS since, p.email AS contact_email "
             "FROM pkdb.orders o LEFT JOIN pkdb.partners p ON p.id = o.partner_id "
             "WHERE o.status IN ('completed','partial_completed') "
             "AND o.grn_completed_at IS NULL "
             "AND o.updated_at < :cutoff AND o.created_at >= :window "
-            "ORDER BY since ASC LIMIT 100"
+            "ORDER BY since DESC LIMIT 100"
         ),
     },
 ]
 
+# Editable per-category reminder templates. {orders} {count} {due_date}
+# {category} {sla_days} are substituted at send time.
+DEFAULT_TEMPLATES = {
+    "coco_grn": {
+        "subject": "GRN pending beyond SLA — CoCo orders",
+        "body": (
+            "Team,\n\n"
+            "The following CoCo orders have GRN pending beyond the {sla_days}-day "
+            "SLA:\n\n{orders}\n\n"
+            "Please ensure the GRN is completed by {due_date}.\n\n"
+            "— Kouzina Live"
+        ),
+    },
+    "partner_grn": {
+        "subject": "Reminder: Please complete the GRN for your Kouzina order(s)",
+        "body": (
+            "Dear Partner,\n\n"
+            "This is a reminder to complete the GRN (Goods Receipt Note) for the "
+            "following order(s):\n\n{orders}\n\n"
+            "Kindly complete the GRN on or before {due_date}. Any order not "
+            "GRN-completed by this date will be treated as fully received and "
+            "complete, and no grievances can be raised thereafter.\n\n"
+            "Thank you,\nKouzina Team"
+        ),
+    },
+}
+
 _redflag_cache: dict = {"at": None, "data": None}
+
+
+def _rule_by_key(key: str) -> Optional[dict]:
+    return next((r for r in REDFLAG_RULES if r["key"] == key), None)
+
+
+def _compute_rule(conn, rule: dict, now: datetime) -> list[dict]:
+    """Run one rule's SQL and shape the breaches (newest breach first)."""
+    try:
+        rows = conn.execute(
+            text(rule["sql"]),
+            {
+                "cutoff": now - timedelta(days=rule["sla_days"]),
+                "window": now - timedelta(days=rule["window_days"]),
+            },
+        ).mappings().all()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        days = max(1, (now - r["since"]).days - rule["sla_days"]) if r["since"] else 1
+        out.append(
+            {
+                "ref": r["ref"],
+                "entity": r["entity"] or "—",
+                "state": r["state"],
+                "since": r["since"],
+                "days_overdue": days,
+                "contact_email": r.get("contact_email"),
+            }
+        )
+    return out
+
+
+def _template_for(rule_key: str) -> dict:
+    with SessionLocal() as db:
+        row = db.get(RedflagTemplateRow, rule_key)
+    base = DEFAULT_TEMPLATES.get(rule_key, {"subject": "", "body": "{orders}"})
+    if row and (row.subject or row.body):
+        return {"subject": row.subject or base["subject"], "body": row.body or base["body"],
+                "is_custom": True}
+    return {**base, "is_custom": False}
+
+
+def _render(tmpl: str, ctx: dict) -> str:
+    out = tmpl
+    for k, v in ctx.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
 
 
 @api.get("/redflags")
@@ -1496,30 +1582,7 @@ def redflags(admin: dict = Depends(current_admin)):
     if IS_MYSQL:
         with engine.connect() as conn:
             for rule in REDFLAG_RULES:
-                try:
-                    rows = conn.execute(
-                        text(rule["sql"]),
-                        {
-                            "cutoff": now - timedelta(days=rule["sla_days"]),
-                            "window": now - timedelta(days=rule["window_days"]),
-                        },
-                    ).mappings().all()
-                except Exception:
-                    rows = []  # a broken rule must not take the tab down
-                flags = [
-                    {
-                        "ref": r["ref"],
-                        "entity": r["entity"] or "—",
-                        "state": r["state"],
-                        "since": _iso_utc(r["since"]),
-                        "days_overdue": max(
-                            1, (now - r["since"]).days - rule["sla_days"]
-                        )
-                        if r["since"]
-                        else 1,
-                    }
-                    for r in rows
-                ]
+                flags = _compute_rule(conn, rule, now)
                 total += len(flags)
                 rules_out.append(
                     {
@@ -1529,27 +1592,39 @@ def redflags(admin: dict = Depends(current_admin)):
                         "sla_days": rule["sla_days"],
                         "window_days": rule["window_days"],
                         "count": len(flags),
-                        "flags": flags,
+                        "can_email_parties": rule["key"] == "partner_grn",
+                        "flags": [
+                            {
+                                "ref": f["ref"],
+                                "entity": f["entity"],
+                                "state": f["state"],
+                                "since": _iso_utc(f["since"]),
+                                "days_overdue": f["days_overdue"],
+                            }
+                            for f in flags
+                        ],
                     }
                 )
-    else:  # local dev: demo flags so the UI is testable
-        rules_out = [
-            {
-                "key": "coco_grn",
-                "label": "CoCo orders — GRN overdue (SLA: 3 days from approval)",
-                "ref_label": "CoCo order",
-                "sla_days": 3,
-                "window_days": 45,
-                "count": 2,
-                "flags": [
-                    {"ref": 1777, "entity": "KLP HSR", "state": "invoiced",
-                     "since": _iso_utc(now - timedelta(days=9)), "days_overdue": 6},
-                    {"ref": 1988, "entity": "E-CITY", "state": "approved",
-                     "since": _iso_utc(now - timedelta(days=5)), "days_overdue": 2},
-                ],
-            }
+    else:  # local dev demo
+        demo = [
+            {"ref": 1988, "entity": "E-CITY", "state": "approved",
+             "since": _iso_utc(now - timedelta(days=5)), "days_overdue": 2},
+            {"ref": 1777, "entity": "KLP HSR", "state": "invoiced",
+             "since": _iso_utc(now - timedelta(days=9)), "days_overdue": 6},
         ]
-        total = 2
+        rules_out = [
+            {"key": "coco_grn",
+             "label": "CoCo orders — GRN overdue (SLA: 3 days from approval)",
+             "ref_label": "CoCo order", "sla_days": 3, "window_days": 45,
+             "count": 2, "can_email_parties": False, "flags": demo},
+            {"key": "partner_grn",
+             "label": "Partner orders — GRN overdue (SLA: 2 days from completion)",
+             "ref_label": "Partner order", "sla_days": 2, "window_days": 30,
+             "count": 1, "can_email_parties": True,
+             "flags": [{"ref": 37474, "entity": "HUNMONI DUTTA", "state": "completed",
+                        "since": _iso_utc(now - timedelta(days=4)), "days_overdue": 2}]},
+        ]
+        total = 3
     data = {
         "total": total,
         "rules": rules_out,
@@ -1561,10 +1636,42 @@ def redflags(admin: dict = Depends(current_admin)):
     return data
 
 
+@api.get("/redflags/templates")
+def get_templates(admin: dict = Depends(current_admin)):
+    return [
+        {"rule_key": rule["key"], "label": rule["label"], **_template_for(rule["key"])}
+        for rule in REDFLAG_RULES
+    ]
+
+
+class TemplateIn(BaseModel):
+    subject: str = Field(..., max_length=300)
+    body: str = Field(..., max_length=6000)
+
+
+@api.put("/redflags/templates/{rule_key}")
+def save_template(rule_key: str, payload: TemplateIn, admin: dict = Depends(current_admin)):
+    if not _rule_by_key(rule_key):
+        raise HTTPException(status_code=404, detail="Unknown category")
+    with SessionLocal() as db:
+        row = db.get(RedflagTemplateRow, rule_key)
+        if not row:
+            row = RedflagTemplateRow(rule_key=rule_key)
+            db.add(row)
+        row.subject = payload.subject.strip()
+        row.body = payload.body.strip()
+        row.updated_by = admin["email"]
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+    return {"ok": True}
+
+
+# ---- Flag a single breach to admins (in-app + email) ----------------------------
+
 class FlagIn(BaseModel):
     ref: int
     entity: str = Field(..., max_length=255)
-    label: str = Field(..., max_length=64)  # e.g. "CoCo order"
+    label: str = Field(..., max_length=64)
     state: Optional[str] = None
     days_overdue: int = 0
     recipients: list[str] = Field(..., min_length=1)
@@ -1590,22 +1697,136 @@ def flag_to_admins(
             db.add(MessageRow(sender=admin["email"], recipient=r, body=line, is_private=0))
         db.commit()
     emit_live_event(
-        who,
-        "redflag_raised",
+        who, "redflag_raised",
         f"flagged {payload.entity} · {payload.label} #{payload.ref}",
         {"module": "Red Flags"},
     )
     emailed = False
     if email_enabled():
         subject = f"[Kouzina Live] Red flag: {payload.entity} — {payload.label} #{payload.ref}"
-        body = (
-            f"{line}\n\n"
-            f"Flagged by {who} via Kouzina Live.\n"
-            f"Open: https://live.kftpl.com"
-        )
+        body = f"{line}\n\nFlagged by {who} via Kouzina Live.\nOpen: https://live.kftpl.com"
         background_tasks.add_task(send_email, recipients, subject, body)
         emailed = True
     return {"ok": True, "messaged": len(recipients), "emailed": emailed}
+
+
+# ---- Send a reminder for a whole category (editable template) -------------------
+
+class GroupSendIn(BaseModel):
+    rule_key: str
+    subject: str = Field(..., max_length=300)
+    body: str = Field(..., max_length=6000)
+    due_date: Optional[str] = None       # YYYY-MM-DD, fills {due_date}
+    recipients: list[str] = []           # admins / any emails for one combined mail
+    to_parties: bool = False             # partner_grn: also mail each partner their own
+    save_template: bool = True           # persist the edited template for the category
+
+
+def _orders_block(flags: list[dict], ref_label: str) -> str:
+    lines = []
+    for f in flags:
+        since = f["since"]
+        since_s = since.strftime("%d %b %Y") if hasattr(since, "strftime") else str(since)
+        lines.append(
+            f"• {f['entity']} — {ref_label} #{f['ref']} — {f['days_overdue']}d overdue "
+            f"(pending since {since_s})"
+        )
+    return "\n".join(lines) if lines else "(none)"
+
+
+@api.post("/redflags/send-group")
+def send_group_reminder(
+    payload: GroupSendIn,
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(current_admin),
+):
+    rule = _rule_by_key(payload.rule_key)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Unknown category")
+    if payload.save_template:
+        with SessionLocal() as db:
+            row = db.get(RedflagTemplateRow, payload.rule_key) or RedflagTemplateRow(
+                rule_key=payload.rule_key
+            )
+            row.subject = payload.subject.strip()
+            row.body = payload.body.strip()
+            row.updated_by = admin["email"]
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            db.merge(row)
+            db.commit()
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    due = payload.due_date
+    if due:
+        try:
+            due = datetime.fromisoformat(due).strftime("%d %b %Y")
+        except ValueError:
+            due = payload.due_date
+    else:
+        due = (now + timedelta(days=2)).strftime("%d %b %Y")
+
+    flags = []
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            flags = _compute_rule(conn, rule, now)
+    who = admin.get("name") or admin["email"]
+
+    def ctx_for(subset):
+        return {
+            "orders": _orders_block(subset, rule["ref_label"]),
+            "count": len(subset),
+            "category": rule["label"],
+            "sla_days": rule["sla_days"],
+            "due_date": due,
+        }
+
+    sent, messaged = 0, 0
+
+    # 1) One combined email to the chosen recipients (admins / ops / custom).
+    recips = [e.strip() for e in dict.fromkeys(payload.recipients) if e and "@" in e]
+    if recips and email_enabled():
+        body = _render(payload.body, ctx_for(flags))
+        subject = _render(payload.subject, ctx_for(flags))
+        background_tasks.add_task(send_email, recips, subject, body)
+        sent += len(recips)
+    # in-app message to admin recipients so it shows on their wall
+    admin_recips = [e for e in recips if is_active_admin(e)]
+    if admin_recips:
+        note = f"🚩 {rule['label']} — {len(flags)} pending. Reminder sent."
+        with SessionLocal() as db:
+            for e in admin_recips:
+                db.add(MessageRow(sender=admin["email"], recipient=e, body=note, is_private=0))
+            db.commit()
+            messaged = len(admin_recips)
+
+    # 2) Optionally email each partner their OWN orders (no cross-partner leak).
+    partner_mails = 0
+    if payload.to_parties and rule["key"] == "partner_grn" and email_enabled():
+        by_email: dict[str, list] = {}
+        for f in flags:
+            em = (f.get("contact_email") or "").strip()
+            if em and "@" in em:
+                by_email.setdefault(em, []).append(f)
+        for em, subset in by_email.items():
+            body = _render(payload.body, ctx_for(subset))
+            subject = _render(payload.subject, ctx_for(subset))
+            background_tasks.add_task(send_email, [em], subject, body)
+            partner_mails += 1
+        sent += partner_mails
+
+    emit_live_event(
+        who, "redflag_reminder_sent",
+        f"sent {rule['ref_label']} GRN reminder ({len(flags)} pending)",
+        {"module": "Red Flags"},
+    )
+    return {
+        "ok": True,
+        "pending": len(flags),
+        "emailed": sent,
+        "messaged": messaged,
+        "partner_emails": partner_mails,
+        "email_enabled": email_enabled(),
+    }
 
 
 # ---- Programs -------------------------------------------------------------------

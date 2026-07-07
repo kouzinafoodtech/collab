@@ -546,7 +546,19 @@ function PersonPanel({ person, me, authFetch, onClose }) {
 
 function RedFlags({ data, admins, authFetch }) {
   const [open, setOpen] = useState(null); // expanded rule key
-  const [flagging, setFlagging] = useState(null); // "rulekey-ref" being flagged
+  const [flagging, setFlagging] = useState(null); // "rulekey-ref" per-item flag
+  const [templates, setTemplates] = useState({});
+  const [composing, setComposing] = useState(null); // rule being emailed
+
+  useEffect(() => {
+    authFetch("/redflags/templates")
+      .then((r) => r.json())
+      .then((list) =>
+        setTemplates(Object.fromEntries(list.map((t) => [t.rule_key, t])))
+      )
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <main className="hub">
@@ -556,28 +568,39 @@ function RedFlags({ data, admins, authFetch }) {
           <span className="muted"> Last checked {timeAgo(data.generated_at)} ago.</span>
         )}
         {data.email_enabled === false && (
-          <span className="muted"> · flagging sends in-app messages (email not configured).</span>
+          <span className="muted"> · email not configured — flagging is in-app only.</span>
         )}
       </div>
       {data.rules.map((rule) => {
         const isOpen = open === rule.key;
         return (
           <section key={rule.key} className="card rf-group">
-            <button
-              className="rf-group-head"
-              onClick={() => setOpen(isOpen ? null : rule.key)}
-            >
-              <span className={`rf-caret ${isOpen ? "down" : ""}`}>▸</span>
-              <span className="rf-group-label">{rule.label}</span>
-              <span className={`rf-count ${rule.count === 0 ? "zero" : ""}`}>
-                {rule.count}
-              </span>
-            </button>
+            <div className="rf-group-head-row">
+              <button
+                className="rf-group-head"
+                onClick={() => setOpen(isOpen ? null : rule.key)}
+              >
+                <span className={`rf-caret ${isOpen ? "down" : ""}`}>▸</span>
+                <span className="rf-group-label">{rule.label}</span>
+                <span className={`rf-count ${rule.count === 0 ? "zero" : ""}`}>
+                  {rule.count}
+                </span>
+              </button>
+              {rule.count > 0 && (
+                <button
+                  className="rf-send-btn"
+                  onClick={() => setComposing(rule.key)}
+                  title="Compose and send a reminder"
+                >
+                  ✉️ Send reminder
+                </button>
+              )}
+            </div>
             {isOpen && (
               <div className="rf-group-body">
                 <div className="muted rf-note">
                   Orders from the last {rule.window_days} days, pending beyond{" "}
-                  {rule.sla_days} days.
+                  {rule.sla_days} days. Latest first.
                 </div>
                 {rule.flags.map((f) => {
                   const fid = `${rule.key}-${f.ref}`;
@@ -625,7 +648,193 @@ function RedFlags({ data, admins, authFetch }) {
       {data.rules.length === 0 && (
         <div className="empty big">Checking for SLA breaches…</div>
       )}
+      {composing && (
+        <ReminderModal
+          rule={data.rules.find((r) => r.key === composing)}
+          template={templates[composing]}
+          admins={admins}
+          authFetch={authFetch}
+          emailEnabled={data.email_enabled}
+          onClose={() => setComposing(null)}
+        />
+      )}
     </main>
+  );
+}
+
+function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClose }) {
+  const [subject, setSubject] = useState(template?.subject || "");
+  const [body, setBody] = useState(template?.body || "");
+  const [due, setDue] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 2);
+    return d.toISOString().slice(0, 10);
+  });
+  const [picked, setPicked] = useState([]);
+  const [extra, setExtra] = useState("");
+  const [toParties, setToParties] = useState(false);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+
+  function toggle(email) {
+    setPicked((cur) =>
+      cur.includes(email) ? cur.filter((e) => e !== email) : [...cur, email]
+    );
+  }
+
+  const dueLabel = new Date(due).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  const ordersPreview = rule.flags
+    .slice(0, 5)
+    .map(
+      (f) =>
+        `• ${f.entity} — ${rule.ref_label} #${f.ref} — ${f.days_overdue}d overdue`
+    )
+    .join("\n");
+  const preview = body
+    .replace("{orders}", ordersPreview + (rule.count > 5 ? `\n…and ${rule.count - 5} more` : ""))
+    .replace("{count}", rule.count)
+    .replace("{category}", rule.label)
+    .replace("{sla_days}", rule.sla_days)
+    .replace("{due_date}", dueLabel);
+
+  async function submit(saveOnly) {
+    const recipients = [
+      ...picked,
+      ...extra.split(/[,\s]+/).map((s) => s.trim()).filter((s) => s.includes("@")),
+    ];
+    if (saveOnly) {
+      setStatus("saving");
+      const res = await authFetch(`/redflags/templates/${rule.key}`, {
+        method: "PUT",
+        body: JSON.stringify({ subject, body }),
+      }).catch(() => null);
+      setStatus(res && res.ok ? "Template saved ✓" : "Save failed");
+      return;
+    }
+    if (recipients.length === 0 && !toParties) {
+      setStatus("Pick recipients or 'email each partner'");
+      return;
+    }
+    setStatus("sending");
+    const res = await authFetch("/redflags/send-group", {
+      method: "POST",
+      body: JSON.stringify({
+        rule_key: rule.key,
+        subject,
+        body,
+        due_date: due,
+        recipients,
+        to_parties: toParties,
+        save_template: true,
+      }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      const d = await res.json();
+      setStatus(
+        d.emailed
+          ? `Sent ${d.emailed} email${d.emailed > 1 ? "s" : ""}` +
+              (d.partner_emails ? ` (${d.partner_emails} to partners)` : "")
+          : "Saved — but email is not configured"
+      );
+      setTimeout(onClose, 1400);
+    } else {
+      setStatus("Failed — try again");
+    }
+  }
+
+  const list = admins.filter((a) =>
+    (a.name || a.email).toLowerCase().includes(query.toLowerCase())
+  );
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <strong>Send reminder — {rule.ref_label}s</strong>
+          <button className="link" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="modal-body">
+          {emailEnabled === false && (
+            <div className="rf-banner">
+              ⚠️ Email isn’t configured yet — you can edit and save the template,
+              but sending won’t deliver mail.
+            </div>
+          )}
+          <label className="fld">
+            <span>Subject</span>
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} />
+          </label>
+          <label className="fld">
+            <span>
+              Body <span className="muted">(placeholders: {"{orders} {due_date} {count} {sla_days}"})</span>
+            </span>
+            <textarea rows={8} value={body} onChange={(e) => setBody(e.target.value)} />
+          </label>
+          <label className="fld">
+            <span>Complete-by date (fills {"{due_date}"})</span>
+            <input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+          </label>
+
+          <div className="fld">
+            <span>Recipients</span>
+            <input
+              placeholder="Search admins…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <div className="flag-people">
+              {list.map((a) => (
+                <label key={a.email} className="flag-person">
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(a.email)}
+                    onChange={() => toggle(a.email)}
+                  />
+                  {a.name || a.email}
+                </label>
+              ))}
+            </div>
+            <input
+              placeholder="Add other emails (comma-separated)…"
+              value={extra}
+              onChange={(e) => setExtra(e.target.value)}
+            />
+          </div>
+
+          {rule.can_email_parties && (
+            <label className="flag-person parties-toggle">
+              <input
+                type="checkbox"
+                checked={toParties}
+                onChange={(e) => setToParties(e.target.checked)}
+              />
+              Also email <strong>&nbsp;each partner&nbsp;</strong> their own order(s)
+            </label>
+          )}
+
+          <div className="preview">
+            <div className="muted preview-label">Preview</div>
+            <div className="preview-subject">{subject}</div>
+            <pre className="preview-body">{preview}</pre>
+          </div>
+        </div>
+        <div className="modal-foot">
+          <span className="muted flag-status">{status}</span>
+          <button className="ghost" onClick={() => submit(true)}>
+            Save template
+          </button>
+          <button onClick={() => submit(false)} disabled={status === "sending"}>
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
