@@ -190,6 +190,7 @@ function Shell({ me, authFetch, logout }) {
   const [view, setView] = useState("live"); // live | messages | dash
   const [person, setPerson] = useState(null); // {actor, email, count}
   const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
+  const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
   const [admins, setAdmins] = useState([]);
 
@@ -285,7 +286,53 @@ function Shell({ me, authFetch, logout }) {
             sign out
           </button>
         </div>
+        <button
+          className="menu-btn"
+          aria-label="Menu"
+          onClick={() => setMenuOpen(!menuOpen)}
+        >
+          {menuOpen ? "✕" : "☰"}
+        </button>
       </header>
+      {menuOpen && (
+        <nav className="mobile-menu">
+          {[
+            ["live", "🔴 Live"],
+            ["programs", "📌 Programs"],
+            ["feedback", "🎭 Feedback"],
+            ["messages", "💬 Messages"],
+            ...(isSuper ? [["dash", "📊 Dashboard"]] : []),
+          ].map(([v, label]) => (
+            <button
+              key={v}
+              className={`mm-item ${view === v ? "active" : ""}`}
+              onClick={() => {
+                if (v === "live") goHome();
+                else setView(v);
+                setMenuOpen(false);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+          <div className="mm-divider" />
+          {PORTALS.map((p) => (
+            <a
+              key={p.label}
+              className="mm-item"
+              href={p.href}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {p.label} ↗
+            </a>
+          ))}
+          <div className="mm-divider" />
+          <button className="mm-item" onClick={logout}>
+            Sign out ({me.name})
+          </button>
+        </nav>
+      )}
 
       {view === "live" && (
         <div className="layout">

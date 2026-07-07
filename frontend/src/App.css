@@ -1478,6 +1478,60 @@ button.link {
   margin: auto;
 }
 
+/* ---- Mobile nav menu ---- */
+.menu-btn {
+  display: none;
+  background: #fff;
+  color: #182026;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 5px 12px;
+  font-size: 1.05rem;
+  line-height: 1.4;
+}
+
+.mobile-menu {
+  position: fixed;
+  top: 56px;
+  left: 8px;
+  right: 8px;
+  z-index: 80;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(24, 32, 38, 0.18);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.mm-item {
+  background: none;
+  color: #182026;
+  text-align: left;
+  padding: 11px 14px;
+  border-radius: 9px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none;
+}
+
+.mm-item:hover {
+  background: #f4f4ff;
+  filter: none;
+}
+
+.mm-item.active {
+  background: #eef2ff;
+  color: var(--brand);
+}
+
+.mm-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 6px 8px;
+}
+
 /* ---- Mobile ---- */
 @media (max-width: 860px) {
   .layout {
@@ -1537,29 +1591,21 @@ button.link {
     flex-wrap: wrap;
   }
 
-  .tabs {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .tab {
-    white-space: nowrap;
-    padding: 7px 11px;
-  }
-
-  .portal-links {
-    gap: 6px;
-    margin-right: 0;
-  }
-
-  .portal-links a {
-    padding: 4px 10px;
-    font-size: 0.72rem;
-  }
-
-  .me-name {
+  /* Header collapses to logo + hamburger; everything moves into the menu. */
+  .tabs,
+  .portal-links,
+  .topbar-me {
     display: none;
+  }
+
+  .menu-btn {
+    display: inline-flex;
+    margin-left: auto;
+  }
+
+  .topbar {
+    flex-wrap: nowrap;
+    justify-content: space-between;
   }
 
   .feed {
