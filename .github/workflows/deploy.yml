@@ -101,6 +101,7 @@ jobs:
               --secrets "${SECRETS[@]}" --only-show-errors
             az containerapp update -g "$RG" -n "$APP" \
               --image "$IMAGE" \
+              --min-replicas 1 --max-replicas 2 \
               --set-env-vars "${ENV_VARS[@]}" --only-show-errors
           else
             echo "Creating app..."
@@ -112,7 +113,7 @@ jobs:
               --registry-password "$ACR_PASS" \
               --target-port 8000 \
               --ingress external \
-              --min-replicas 0 \
+              --min-replicas 1 \
               --max-replicas 2 \
               --secrets "${SECRETS[@]}" \
               --env-vars "${ENV_VARS[@]}" --only-show-errors

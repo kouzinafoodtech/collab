@@ -257,6 +257,8 @@ def current_admin(cred: Optional[HTTPAuthorizationCredentials] = Depends(bearer)
 
 INGEST_INTERVAL = timedelta(seconds=30)
 INGEST_BATCH = 500
+# Same person doing the same action within this window collapses to one card.
+GROUP_WINDOW = timedelta(minutes=15)
 
 # Routine events that would just be noise in the feed.
 EXCLUDED_ACTIONS = {"login", "logout", "switch_tenant"}
@@ -407,6 +409,11 @@ def _seed_dev_events(db):
         ("ali", "price_update", "price update item #88"),
         ("Priya", "user_create", "created user #14"),
         ("Rohan", "expense_added", "expense added expense #501"),
+        # A burst by the same actor — exercises grouping in dev.
+        ("Flame & Feast", "stock_deducted", "stock deducted · Manchurian Sauce (98 → 93)"),
+        ("Flame & Feast", "stock_deducted", "stock deducted · Coated Paneer (27 → 25)"),
+        ("Flame & Feast", "stock_deducted", "stock deducted · Butter Chicken Gravy (206 → 196)"),
+        ("Flame & Feast", "stock_deducted", "stock deducted · Egg Corn Fried Rice (743 → 733)"),
     ]
     details = json.dumps(
         {"item_name": "LACCHA PARATHA MAIDA", "active": {"from": True, "to": False}}
@@ -466,30 +473,36 @@ def maybe_ingest():
                         # must not take down the whole feed.
                         continue
                     watermark = state.last_id or 0
+                    # One query to find already-ingested rows instead of one
+                    # SELECT per row — matters now that PK logs busily.
+                    ids = [r["id"] for r in rows]
+                    existing = set()
+                    if ids:
+                        existing = {
+                            sid
+                            for (sid,) in db.query(FeedEventRow.source_id).filter(
+                                FeedEventRow.source == source["name"],
+                                FeedEventRow.source_id.in_(ids),
+                            )
+                        }
                     for r in rows:
                         watermark = r["id"]
-                        if r["action"] in EXCLUDED_ACTIONS:
+                        if r["action"] in EXCLUDED_ACTIONS or r["id"] in existing:
                             continue
-                        exists = (
-                            db.query(FeedEventRow.id)
-                            .filter_by(source=source["name"], source_id=r["id"])
-                            .first()
-                        )
-                        if not exists:
-                            db.add(
-                                FeedEventRow(
-                                    portal=source["portal"],
-                                    source=source["name"],
-                                    source_id=r["id"],
-                                    actor=r["actor"] or "Unknown",
-                                    action=r["action"],
-                                    summary=_summarize(
-                                        r["action"], r["entity_type"], r["entity_id"]
-                                    ),
-                                    details=r["details"],
-                                    happened_at=r["created_at"],
-                                )
+                        db.add(
+                            FeedEventRow(
+                                portal=source["portal"],
+                                source=source["name"],
+                                source_id=r["id"],
+                                actor=r["actor"] or "Unknown",
+                                action=r["action"],
+                                summary=_summarize(
+                                    r["action"], r["entity_type"], r["entity_id"]
+                                ),
+                                details=r["details"],
+                                happened_at=r["created_at"],
                             )
+                        )
                     state.last_id = watermark
                     state.last_run = now
                 db.commit()
@@ -588,11 +601,12 @@ def get_feed(
     portal: Optional[str] = Query(default=None),
     admin: dict = Depends(current_admin),
 ):
-    """Latest events first, ordered by when they actually happened. The first
-    page responds immediately from the local table; ingestion of new audit rows
-    runs AFTER the response is sent, so the feed is never blocked on the source
-    databases. Page into the past with cursor_ts + cursor_id (the happened_at
-    and id of the oldest event you have)."""
+    """Latest activity first, GROUPED: consecutive events by the same person
+    doing the same action within GROUP_WINDOW collapse into one card (so a
+    burst of per-item stock deductions reads as a single update). The first
+    page responds immediately from the local table; ingestion of new audit
+    rows runs AFTER the response is sent. `limit` counts groups; page into the
+    past with the returned next_cursor_ts / next_cursor_id."""
     if cursor_ts is None:
         background_tasks.add_task(maybe_ingest)
     with SessionLocal() as db:
@@ -615,52 +629,98 @@ def get_feed(
                     ),
                 )
             )
+        raw_fetch = min(limit * 12, 300)
         rows = (
             q.order_by(FeedEventRow.happened_at.desc(), FeedEventRow.id.desc())
-            .limit(limit)
+            .limit(raw_fetch + 1)
             .all()
         )
+        overflow = len(rows) > raw_fetch
+        rows = rows[:raw_fetch]
 
-        ids = [r.id for r in rows]
+        # Collapse consecutive same-actor same-action events into groups.
+        groups: list[dict] = []
+        consumed = 0
+        for r in rows:
+            g = groups[-1] if groups else None
+            r_ts = r.happened_at or datetime.min
+            if (
+                g is not None
+                and g["portal"] == r.portal
+                and g["actor"] == r.actor
+                and g["action"] == r.action
+                and (g["anchor"] - r_ts) <= GROUP_WINDOW
+            ):
+                g["members"].append(r)
+                consumed += 1
+                continue
+            if len(groups) == limit:
+                break
+            groups.append(
+                {
+                    "portal": r.portal,
+                    "actor": r.actor,
+                    "action": r.action,
+                    "anchor": r_ts,
+                    "members": [r],
+                }
+            )
+            consumed += 1
+
+        has_more = overflow or consumed < len(rows)
+        last = rows[consumed - 1] if consumed else None
+
+        rep_ids = [g["members"][0].id for g in groups]
         like_counts: dict[int, int] = {}
         my_likes: set[int] = set()
         comment_counts: dict[int, int] = {}
-        if ids:
+        if rep_ids:
             for event_id, cnt in (
                 db.query(EventLikeRow.event_id, func.count())
-                .filter(EventLikeRow.event_id.in_(ids))
+                .filter(EventLikeRow.event_id.in_(rep_ids))
                 .group_by(EventLikeRow.event_id)
             ):
                 like_counts[event_id] = cnt
             my_likes = {
                 r[0]
                 for r in db.query(EventLikeRow.event_id).filter(
-                    EventLikeRow.event_id.in_(ids),
+                    EventLikeRow.event_id.in_(rep_ids),
                     EventLikeRow.admin_email == admin["email"],
                 )
             }
             for event_id, cnt in (
                 db.query(EventCommentRow.event_id, func.count())
-                .filter(EventCommentRow.event_id.in_(ids))
+                .filter(EventCommentRow.event_id.in_(rep_ids))
                 .group_by(EventCommentRow.event_id)
             ):
                 comment_counts[event_id] = cnt
 
-    return {
-        "events": [
+    events = []
+    for g in groups:
+        rep = g["members"][0]  # newest member represents the group
+        events.append(
             {
-                "id": r.id,
-                "portal": r.portal,
-                "actor": r.actor,
-                "action": r.action,
-                "summary": _render_summary(r.action, r.summary, r.details),
-                "happened_at": _iso_utc(r.happened_at),
-                "like_count": like_counts.get(r.id, 0),
-                "liked_by_me": r.id in my_likes,
-                "comment_count": comment_counts.get(r.id, 0),
+                "id": rep.id,
+                "portal": rep.portal,
+                "actor": rep.actor,
+                "action": rep.action,
+                "summary": _render_summary(rep.action, rep.summary, rep.details),
+                "happened_at": _iso_utc(rep.happened_at),
+                "count": len(g["members"]),
+                "extras": [
+                    _render_summary(m.action, m.summary, m.details)
+                    for m in g["members"][1:6]
+                ],
+                "like_count": like_counts.get(rep.id, 0),
+                "liked_by_me": rep.id in my_likes,
+                "comment_count": comment_counts.get(rep.id, 0),
             }
-            for r in rows
-        ]
+        )
+    return {
+        "events": events,
+        "has_more": has_more,
+        "next_cursor_ts": _iso_utc(last.happened_at) if last else None,
+        "next_cursor_id": last.id if last else None,
     }
 
 

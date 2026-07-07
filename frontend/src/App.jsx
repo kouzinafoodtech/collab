@@ -165,51 +165,82 @@ function Shell({ me, authFetch, logout }) {
 // ---- Live Updates feed ------------------------------------------------------
 
 const PAGE_FIRST = 10; // small first page = instant paint
-const PAGE_MORE = 30;
+const PAGE_MORE = 20;
 
-function mergeEvents(current, incoming) {
-  // Union by id, ordered by when the event happened (newest first) — polls
-  // update the top of the feed while "Load older" appends history.
-  const byId = new Map();
-  for (const e of [...current, ...incoming]) byId.set(e.id, e);
-  return [...byId.values()].sort(
-    (a, b) =>
-      (b.happened_at || "").localeCompare(a.happened_at || "") || b.id - a.id
-  );
+function actorColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return `hsl(${h}, 62%, 46%)`;
+}
+
+function initials(name) {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
+}
+
+function actionKind(action) {
+  if (/stock|inventory|quantity|csv/.test(action)) return "stock";
+  if (/order|grn|dispatch|deliver/.test(action)) return "order";
+  if (/expense|bill|invoice|paid|payment|payout|credit/.test(action)) return "money";
+  if (/admin|user|permission|role/.test(action)) return "people";
+  if (/price/.test(action)) return "price";
+  return "other";
 }
 
 function Feed({ me, authFetch }) {
-  const [events, setEvents] = useState([]);
+  const [top, setTop] = useState([]); // freshest page, replaced by each poll
+  const [older, setOlder] = useState([]); // paged history, appended
+  const [cursor, setCursor] = useState(null); // {ts, id} for the next older page
+  const [hasMore, setHasMore] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState(null);
   const [openComments, setOpenComments] = useState(null); // event id
-  const [reachedEnd, setReachedEnd] = useState(false);
+  const [expanded, setExpanded] = useState(null); // group id with extras open
   const [loadingOlder, setLoadingOlder] = useState(false);
 
-  const load = useCallback(() => {
+  const load = useCallback((manual = false) => {
+    if (manual) setRefreshing(true);
     authFetch(`/feed?limit=${PAGE_FIRST}`)
       .then((r) => r.json())
       .then((data) => {
-        setEvents((cur) => mergeEvents(cur, data.events));
-        if (data.events.length < PAGE_FIRST) setReachedEnd(true);
+        setTop(data.events);
+        setUpdatedAt(new Date());
         setLoaded(true);
+        setOlder((cur) => {
+          if (cur.length === 0) {
+            setCursor(
+              data.next_cursor_id
+                ? { ts: data.next_cursor_ts, id: data.next_cursor_id }
+                : null
+            );
+            setHasMore(data.has_more);
+          }
+          return cur;
+        });
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setRefreshing(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadOlder() {
-    if (!events.length || loadingOlder) return;
+    if (!cursor || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const oldest = events[events.length - 1];
       const res = await authFetch(
         `/feed?limit=${PAGE_MORE}&cursor_ts=${encodeURIComponent(
-          oldest.happened_at
-        )}&cursor_id=${oldest.id}`
+          cursor.ts
+        )}&cursor_id=${cursor.id}`
       );
       const data = await res.json();
-      setEvents((cur) => mergeEvents(cur, data.events));
-      if (data.events.length < PAGE_MORE) setReachedEnd(true);
+      setOlder((cur) => [...cur, ...data.events]);
+      setCursor(
+        data.next_cursor_id
+          ? { ts: data.next_cursor_ts, id: data.next_cursor_id }
+          : null
+      );
+      setHasMore(data.has_more);
     } catch {
       /* ignore */
     } finally {
@@ -219,14 +250,18 @@ function Feed({ me, authFetch }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 8000);
+    const t = setInterval(() => load(false), 10000);
     return () => clearInterval(t);
   }, [load]);
 
+  // Top page wins on overlap with paged history.
+  const topIds = new Set(top.map((e) => e.id));
+  const events = [...top, ...older.filter((e) => !topIds.has(e.id))];
+
   async function toggleLike(ev) {
     // Optimistic flip; server response reconciles.
-    setEvents((cur) =>
-      cur.map((e) =>
+    const patch = (list) =>
+      list.map((e) =>
         e.id === ev.id
           ? {
               ...e,
@@ -234,18 +269,20 @@ function Feed({ me, authFetch }) {
               like_count: e.like_count + (e.liked_by_me ? -1 : 1),
             }
           : e
-      )
-    );
+      );
+    setTop(patch);
+    setOlder(patch);
     try {
       const res = await authFetch(`/feed/${ev.id}/like`, { method: "POST" });
       const data = await res.json();
-      setEvents((cur) =>
-        cur.map((e) =>
+      const settle = (list) =>
+        list.map((e) =>
           e.id === ev.id
             ? { ...e, liked_by_me: data.liked, like_count: data.like_count }
             : e
-        )
-      );
+        );
+      setTop(settle);
+      setOlder(settle);
     } catch {
       /* poll will reconcile */
     }
@@ -253,35 +290,95 @@ function Feed({ me, authFetch }) {
 
   return (
     <main className="feed">
+      <div className="feed-bar">
+        <span className="feed-updated">
+          {updatedAt
+            ? `Updated ${updatedAt.toLocaleTimeString(undefined, {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })}`
+            : "Loading…"}
+        </span>
+        <button
+          className={`refresh ${refreshing ? "spinning" : ""}`}
+          onClick={() => load(true)}
+          disabled={refreshing}
+        >
+          <span className="refresh-icon">⟳</span> Refresh
+        </button>
+      </div>
       {events.map((ev) => (
-        <article key={ev.id} className="event card">
-          <div className="event-head">
-            <span className={`badge badge-${ev.portal.toLowerCase()}`}>{ev.portal}</span>
-            <strong className="event-actor">{ev.actor}</strong>
-            <span className="event-summary">{ev.summary}</span>
-            <span className="event-time" title={new Date(ev.happened_at).toLocaleString()}>
-              {formatWhen(ev.happened_at)}
+        <article key={ev.id} className={`event card kind-${actionKind(ev.action)}`}>
+          <div className="event-row">
+            <span className="avatar" style={{ background: actorColor(ev.actor) }}>
+              {initials(ev.actor)}
             </span>
+            <div className="event-main">
+              <div className="event-head">
+                <strong className="event-actor">{ev.actor}</strong>
+                <span className={`badge badge-${ev.portal.toLowerCase()}`}>
+                  {ev.portal}
+                </span>
+                <span className={`chip chip-${actionKind(ev.action)}`}>
+                  {ev.action.replace(/_/g, " ")}
+                </span>
+                {ev.count > 1 && <span className="count-pill">×{ev.count}</span>}
+                <span
+                  className="event-time"
+                  title={new Date(ev.happened_at).toLocaleString()}
+                >
+                  {formatWhen(ev.happened_at)}
+                </span>
+              </div>
+              <div className="event-summary">{ev.summary}</div>
+              {ev.count > 1 && (
+                <>
+                  <button
+                    className="link expand"
+                    onClick={() =>
+                      setExpanded(expanded === ev.id ? null : ev.id)
+                    }
+                  >
+                    {expanded === ev.id
+                      ? "hide"
+                      : `show ${ev.count - 1} more like this`}
+                  </button>
+                  {expanded === ev.id && (
+                    <ul className="extras">
+                      {ev.extras.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                      {ev.count - 1 > ev.extras.length && (
+                        <li className="muted">
+                          …and {ev.count - 1 - ev.extras.length} more
+                        </li>
+                      )}
+                    </ul>
+                  )}
+                </>
+              )}
+              <div className="event-actions">
+                <button
+                  className={`react ${ev.liked_by_me ? "liked" : ""}`}
+                  onClick={() => toggleLike(ev)}
+                >
+                  {ev.liked_by_me ? "♥" : "♡"} {ev.like_count || ""}
+                </button>
+                <button
+                  className="react"
+                  onClick={() =>
+                    setOpenComments(openComments === ev.id ? null : ev.id)
+                  }
+                >
+                  💬 {ev.comment_count || ""}
+                </button>
+              </div>
+              {openComments === ev.id && (
+                <Comments eventId={ev.id} authFetch={authFetch} onPosted={() => load(false)} />
+              )}
+            </div>
           </div>
-          <div className="event-actions">
-            <button
-              className={`react ${ev.liked_by_me ? "liked" : ""}`}
-              onClick={() => toggleLike(ev)}
-            >
-              {ev.liked_by_me ? "♥" : "♡"} {ev.like_count || ""}
-            </button>
-            <button
-              className="react"
-              onClick={() =>
-                setOpenComments(openComments === ev.id ? null : ev.id)
-              }
-            >
-              💬 {ev.comment_count || ""}
-            </button>
-          </div>
-          {openComments === ev.id && (
-            <Comments eventId={ev.id} authFetch={authFetch} onPosted={load} />
-          )}
         </article>
       ))}
       {events.length === 0 && (
@@ -291,7 +388,7 @@ function Feed({ me, authFetch }) {
             : "Loading updates…"}
         </div>
       )}
-      {events.length > 0 && !reachedEnd && (
+      {events.length > 0 && hasMore && (
         <button className="load-older" onClick={loadOlder} disabled={loadingOlder}>
           {loadingOlder ? "Loading…" : "Load older updates"}
         </button>

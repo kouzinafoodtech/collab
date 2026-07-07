@@ -1,6 +1,12 @@
 :root {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color: #1a1a1a;
+  color: #182026;
+  --brand: #4f46e5;
+  --brand-2: #7c3aed;
+  --bg: #eef1f7;
+  --card: #ffffff;
+  --line: #e4e7ef;
+  --muted: #8a93a3;
 }
 
 * {
@@ -9,7 +15,8 @@
 
 body {
   margin: 0;
-  background: #f4f5f7;
+  background: linear-gradient(180deg, #eef1f7 0%, #f6f7fb 100%);
+  min-height: 100vh;
 }
 
 .app {
@@ -28,6 +35,10 @@ body {
 h1 {
   font-size: 1.4rem;
   margin: 0 0 4px;
+  background: linear-gradient(90deg, var(--brand), var(--brand-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .subtitle {
@@ -36,9 +47,9 @@ h1 {
 }
 
 .card {
-  background: #fff;
-  border: 1px solid #e3e5e8;
-  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
   padding: 20px;
 }
 
@@ -47,33 +58,36 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  box-shadow: 0 12px 40px rgba(79, 70, 229, 0.12);
 }
 
 input {
   border: 1px solid #d0d3d7;
-  border-radius: 8px;
+  border-radius: 9px;
   padding: 10px 12px;
   font-size: 0.95rem;
   outline: none;
   width: 100%;
+  background: #fff;
 }
 
 input:focus {
-  border-color: #4f7cff;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
 button {
-  background: #4f7cff;
+  background: linear-gradient(90deg, var(--brand), var(--brand-2));
   color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: 9px;
   padding: 10px 16px;
   font-size: 0.95rem;
   cursor: pointer;
 }
 
 button:hover {
-  background: #3a67ec;
+  filter: brightness(1.08);
 }
 
 button:disabled {
@@ -83,7 +97,7 @@ button:disabled {
 
 button.link {
   background: none;
-  color: #4f7cff;
+  color: var(--brand);
   padding: 0;
   text-decoration: underline;
   font-size: 0.8rem;
@@ -108,12 +122,18 @@ button.link {
   gap: 20px;
   padding: 10px 18px;
   background: #fff;
-  border-bottom: 1px solid #e3e5e8;
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 8px rgba(24, 32, 38, 0.04);
 }
 
 .brand {
-  font-weight: 700;
-  color: #4f7cff;
+  font-weight: 800;
+  font-size: 1.05rem;
+  background: linear-gradient(90deg, var(--brand), var(--brand-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.01em;
 }
 
 .tabs {
@@ -126,17 +146,18 @@ button.link {
   background: none;
   color: #555;
   padding: 8px 14px;
-  border-radius: 8px;
+  border-radius: 999px;
   font-weight: 600;
 }
 
 .tab:hover {
   background: #f0f2f5;
+  filter: none;
 }
 
 .tab.active {
-  background: #eef2ff;
-  color: #4f7cff;
+  background: linear-gradient(90deg, rgba(79, 70, 229, 0.12), rgba(124, 58, 237, 0.12));
+  color: var(--brand);
 }
 
 .topbar-me {
@@ -152,41 +173,142 @@ button.link {
 
 .me-email {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--muted);
 }
 
 /* ---- Feed ---- */
 .feed {
   flex: 1;
   overflow-y: auto;
-  padding: 20px 16px 40px;
+  padding: 16px 16px 48px;
   width: 100%;
-  max-width: 640px;
+  max-width: 680px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
+.feed-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+}
+
+.feed-updated {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.refresh {
+  background: #fff;
+  color: var(--brand);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.refresh:hover {
+  background: #f4f4ff;
+  filter: none;
+}
+
+.refresh-icon {
+  display: inline-block;
+  font-size: 1rem;
+}
+
+.refresh.spinning .refresh-icon {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .event {
   padding: 14px 16px;
+  border-left: 4px solid transparent;
+  box-shadow: 0 1px 4px rgba(24, 32, 38, 0.05);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.event:hover {
+  box-shadow: 0 6px 18px rgba(24, 32, 38, 0.09);
+  transform: translateY(-1px);
+}
+
+.kind-stock {
+  border-left-color: #f59e0b;
+}
+
+.kind-order {
+  border-left-color: #3b82f6;
+}
+
+.kind-money {
+  border-left-color: #10b981;
+}
+
+.kind-people {
+  border-left-color: #8b5cf6;
+}
+
+.kind-price {
+  border-left-color: #ec4899;
+}
+
+.kind-other {
+  border-left-color: #cbd5e1;
+}
+
+.event-row {
+  display: flex;
+  gap: 12px;
+}
+
+.avatar {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.event-main {
+  flex: 1;
+  min-width: 0;
 }
 
 .event-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
 .badge {
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   padding: 2px 8px;
   border-radius: 999px;
   background: #eef2ff;
-  color: #4f7cff;
+  color: var(--brand);
 }
 
 .badge-kfc {
@@ -204,19 +326,93 @@ button.link {
   color: #8e44ad;
 }
 
+.chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+  text-transform: lowercase;
+}
+
+.chip-stock {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.chip-order {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.chip-money {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.chip-people {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.chip-price {
+  background: #fce7f3;
+  color: #be185d;
+}
+
+.chip-other {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.count-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #182026;
+  color: #fff;
+}
+
 .event-actor {
   font-size: 0.95rem;
 }
 
 .event-summary {
-  color: #444;
-  font-size: 0.95rem;
+  color: #3c4757;
+  font-size: 0.94rem;
+  margin-top: 4px;
+  word-break: break-word;
 }
 
 .event-time {
   margin-left: auto;
-  color: #999;
+  color: var(--muted);
   font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.expand {
+  margin-top: 4px;
+  text-decoration: none !important;
+  font-weight: 600;
+}
+
+.extras {
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  list-style: none;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 0.86rem;
+  color: #4b5563;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.muted {
+  color: var(--muted);
 }
 
 .event-actions {
@@ -228,7 +424,7 @@ button.link {
 .react {
   background: none;
   color: #666;
-  border: 1px solid #e3e5e8;
+  border: 1px solid var(--line);
   border-radius: 999px;
   padding: 4px 12px;
   font-size: 0.85rem;
@@ -236,6 +432,7 @@ button.link {
 
 .react:hover {
   background: #f7f8fa;
+  filter: none;
 }
 
 .react.liked {
@@ -274,13 +471,14 @@ button.link {
 .load-older {
   align-self: center;
   background: #fff;
-  color: #4f7cff;
+  color: var(--brand);
   border: 1px solid #d7defc;
   margin-top: 4px;
 }
 
 .load-older:hover {
   background: #eef2ff;
+  filter: none;
 }
 
 /* ---- Messenger layout ---- */
@@ -292,7 +490,7 @@ button.link {
 }
 
 .sidebar {
-  border-right: 1px solid #e3e5e8;
+  border-right: 1px solid var(--line);
   background: #fff;
   display: flex;
   flex-direction: column;
@@ -321,6 +519,7 @@ button.link {
 
 .person:hover {
   background: #f7f8fa;
+  filter: none;
 }
 
 .person.active {
@@ -345,7 +544,7 @@ button.link {
 
 .chat-head {
   padding: 14px 18px;
-  border-bottom: 1px solid #e3e5e8;
+  border-bottom: 1px solid var(--line);
   background: #fff;
   display: flex;
   align-items: baseline;
@@ -387,7 +586,7 @@ button.link {
 
 .bubble.mine {
   align-self: flex-end;
-  background: #4f7cff;
+  background: linear-gradient(90deg, var(--brand), var(--brand-2));
   color: #fff;
   border-bottom-right-radius: 4px;
 }
@@ -395,7 +594,7 @@ button.link {
 .bubble.theirs {
   align-self: flex-start;
   background: #fff;
-  border: 1px solid #e3e5e8;
+  border: 1px solid var(--line);
   border-bottom-left-radius: 4px;
 }
 
@@ -403,7 +602,7 @@ button.link {
   display: flex;
   gap: 8px;
   padding: 12px;
-  border-top: 1px solid #e3e5e8;
+  border-top: 1px solid var(--line);
   background: #fff;
 }
 
@@ -416,7 +615,7 @@ button.link {
 }
 
 .empty {
-  color: #999;
+  color: var(--muted);
   text-align: center;
   padding: 20px;
   font-size: 0.9rem;
