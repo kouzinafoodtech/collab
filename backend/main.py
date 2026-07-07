@@ -45,6 +45,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     and_,
+    bindparam,
     create_engine,
     func,
     or_,
@@ -590,6 +591,95 @@ def admins(admin: dict = Depends(current_admin)):
     return [a for a in list_active_admins() if a["email"] != admin["email"]]
 
 
+@api.get("/leaderboard")
+def leaderboard(admin: dict = Depends(current_admin)):
+    """Most active people in the last 12 hours, by number of feed events.
+    Each entry resolves to an admin email when the actor name matches an
+    active admin — that's what makes them messageable."""
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=12)
+    with SessionLocal() as db:
+        rows = (
+            db.query(FeedEventRow.actor, func.count())
+            .filter(FeedEventRow.happened_at >= since)
+            .group_by(FeedEventRow.actor)
+            .order_by(func.count().desc())
+            .limit(15)
+            .all()
+        )
+    entries = [{"actor": a, "count": c, "email": None} for a, c in rows]
+    names = [e["actor"] for e in entries]
+    if names:
+        if IS_MYSQL:
+            with engine.connect() as conn:
+                pairs = conn.execute(
+                    text(
+                        "SELECT name, email FROM pkdb.admins "
+                        "WHERE active = 1 AND name IN :names"
+                    ).bindparams(bindparam("names", expanding=True)),
+                    {"names": names},
+                ).all()
+            by_name = {n: em for n, em in pairs}
+        else:
+            by_name = {a["name"]: a["email"] for a in list_active_admins()}
+        for e in entries:
+            e["email"] = by_name.get(e["actor"])
+    return entries
+
+
+# ---- Message wall (visible to all admins, Twitter-mentions style) -----------
+
+@api.get("/wall/{email}")
+def get_wall(email: str, admin: dict = Depends(current_admin)):
+    """Recent messages sent TO this person, from anyone — shown to all admins."""
+    with SessionLocal() as db:
+        rows = (
+            db.query(MessageRow)
+            .filter(MessageRow.recipient == email)
+            .order_by(MessageRow.id.desc())
+            .limit(30)
+            .all()
+        )
+    senders = sorted({r.sender for r in rows})
+    names = {}
+    if senders and IS_MYSQL:
+        with engine.connect() as conn:
+            pairs = conn.execute(
+                text(
+                    "SELECT email, name FROM pkdb.admins WHERE email IN :emails"
+                ).bindparams(bindparam("emails", expanding=True)),
+                {"emails": senders},
+            ).all()
+        names = {em: n for em, n in pairs}
+    elif senders:
+        names = {a["email"]: a["name"] for a in list_active_admins()}
+    return [
+        {
+            "id": r.id,
+            "sender": r.sender,
+            "sender_name": names.get(r.sender) or r.sender.split("@")[0],
+            "body": r.body,
+            "created_at": _iso_utc(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+@api.post("/wall/{email}", status_code=201)
+def post_wall(email: str, body: CommentIn, admin: dict = Depends(current_admin)):
+    text_body = body.body.strip()
+    if not text_body:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if email == admin["email"]:
+        raise HTTPException(status_code=400, detail="You can't message yourself")
+    if not is_active_admin(email):
+        raise HTTPException(status_code=400, detail="Recipient must be an active admin")
+    with SessionLocal() as db:
+        row = MessageRow(sender=admin["email"], recipient=email, body=text_body)
+        db.add(row)
+        db.commit()
+    return {"ok": True}
+
+
 # ---- Live Updates feed ------------------------------------------------------
 
 @api.get("/feed")
@@ -599,6 +689,7 @@ def get_feed(
     cursor_ts: Optional[str] = Query(default=None),
     cursor_id: Optional[int] = Query(default=None),
     portal: Optional[str] = Query(default=None),
+    actor: Optional[str] = Query(default=None),
     admin: dict = Depends(current_admin),
 ):
     """Latest activity first, GROUPED: consecutive events by the same person
@@ -613,6 +704,8 @@ def get_feed(
         q = db.query(FeedEventRow)
         if portal:
             q = q.filter(FeedEventRow.portal == portal)
+        if actor:
+            q = q.filter(FeedEventRow.actor == actor)
         if cursor_ts is not None and cursor_id is not None:
             try:
                 ts = datetime.fromisoformat(cursor_ts)

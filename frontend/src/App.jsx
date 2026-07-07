@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const API = "/api";
 
@@ -18,6 +18,32 @@ function timeAgo(iso) {
   if (secs < 3600) return `${Math.floor(secs / 60)}m`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h`;
   return new Date(iso).toLocaleDateString();
+}
+
+function actorColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return `hsl(${h}, 62%, 46%)`;
+}
+
+function actorTint(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return `hsl(${h}, 70%, 95%)`;
+}
+
+function initials(name) {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
+}
+
+function actionKind(action) {
+  if (/stock|inventory|quantity|csv/.test(action)) return "stock";
+  if (/order|grn|dispatch|deliver/.test(action)) return "order";
+  if (/expense|bill|invoice|paid|payment|payout|credit/.test(action)) return "money";
+  if (/admin|user|permission|role/.test(action)) return "people";
+  if (/price/.test(action)) return "price";
+  return "other";
 }
 
 export default function App() {
@@ -102,7 +128,10 @@ function Login({ onLoggedIn }) {
   return (
     <div className="app center">
       <form onSubmit={submit} className="card login">
-        <h1>Kouzina Live Updates</h1>
+        <div className="brand login-brand">
+          <span className="live-dot" />
+          Kouzina <span className="brand-live">Live</span>
+        </div>
         <p className="subtitle">Admins only. Sign in with your work email.</p>
         <input
           type="email"
@@ -126,25 +155,43 @@ function Login({ onLoggedIn }) {
   );
 }
 
+const PORTALS = [
+  { label: "KPK", href: "https://partner.kftpl.com" },
+  { label: "KFC", href: "https://finance.kftpl.com" },
+  { label: "KAC", href: "https://admin.kftpl.com" },
+];
+
 function Shell({ me, authFetch, logout }) {
-  const [tab, setTab] = useState("feed");
+  const [person, setPerson] = useState(null); // {actor, email, count}
+  const [board, setBoard] = useState([]);
+
+  const loadBoard = useCallback(() => {
+    authFetch("/leaderboard")
+      .then((r) => r.json())
+      .then(setBoard)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    loadBoard();
+    const t = setInterval(loadBoard, 60000);
+    return () => clearInterval(t);
+  }, [loadBoard]);
+
   return (
     <div className="shell">
       <header className="topbar">
-        <div className="brand">Kouzina</div>
-        <nav className="tabs">
-          <button
-            className={`tab ${tab === "feed" ? "active" : ""}`}
-            onClick={() => setTab("feed")}
-          >
-            Live Updates
-          </button>
-          <button
-            className={`tab ${tab === "dms" ? "active" : ""}`}
-            onClick={() => setTab("dms")}
-          >
-            Messages
-          </button>
+        <div className="brand">
+          <span className="live-dot" />
+          Kouzina <span className="brand-live">Live</span>
+        </div>
+        <nav className="portal-links">
+          {PORTALS.map((p) => (
+            <a key={p.label} href={p.href} target="_blank" rel="noreferrer">
+              {p.label} <span className="ext">↗</span>
+            </a>
+          ))}
         </nav>
         <div className="topbar-me">
           <span className="me-name">{me.name}</span>
@@ -153,11 +200,161 @@ function Shell({ me, authFetch, logout }) {
           </button>
         </div>
       </header>
-      {tab === "feed" ? (
-        <Feed me={me} authFetch={authFetch} />
+
+      <div className="layout">
+        <div className="feed-col">
+          {person && (
+            <PersonPanel
+              key={person.actor}
+              person={person}
+              me={me}
+              authFetch={authFetch}
+              onClose={() => setPerson(null)}
+            />
+          )}
+          <Feed
+            key={person ? person.actor : "__all__"}
+            authFetch={authFetch}
+            actor={person ? person.actor : null}
+          />
+        </div>
+        <Leaderboard board={board} selected={person?.actor} onSelect={setPerson} />
+      </div>
+    </div>
+  );
+}
+
+function Leaderboard({ board, selected, onSelect }) {
+  return (
+    <aside className="leaderboard">
+      <div className="lb-title">Most active · 12h</div>
+      <div className="lb-list">
+        {board.map((p, i) => (
+          <button
+            key={p.actor}
+            className={`lb-item ${selected === p.actor ? "active" : ""}`}
+            onClick={() => onSelect(selected === p.actor ? null : p)}
+          >
+            <span className="lb-rank">{i + 1}</span>
+            <span className="avatar sm" style={{ background: actorColor(p.actor) }}>
+              {initials(p.actor)}
+            </span>
+            <span className="lb-name">{p.actor}</span>
+            <span className="lb-count">{p.count}</span>
+          </button>
+        ))}
+        {board.length === 0 && <div className="empty">Quiet last 12 hours.</div>}
+      </div>
+    </aside>
+  );
+}
+
+function PersonPanel({ person, me, authFetch, onClose }) {
+  return (
+    <section className="person-panel card">
+      <div className="person-head">
+        <span className="avatar" style={{ background: actorColor(person.actor) }}>
+          {initials(person.actor)}
+        </span>
+        <div className="person-id">
+          <strong>{person.actor}</strong>
+          <span className="person-sub">
+            {person.count} actions in the last 12h
+            {person.email ? ` · ${person.email}` : ""}
+          </span>
+        </div>
+        <button className="link" onClick={onClose}>
+          ✕ close
+        </button>
+      </div>
+      {person.email && person.email !== me.email ? (
+        <Wall email={person.email} name={person.actor} authFetch={authFetch} />
+      ) : person.email === me.email ? (
+        <Wall email={person.email} name="you" authFetch={authFetch} readOnly />
       ) : (
-        <Messenger me={me} authFetch={authFetch} />
+        <p className="person-sub muted">
+          Not a messageable admin — showing their activity below.
+        </p>
       )}
+    </section>
+  );
+}
+
+function Wall({ email, name, authFetch, readOnly = false }) {
+  const [messages, setMessages] = useState([]);
+  const [body, setBody] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => {
+    authFetch(`/wall/${encodeURIComponent(email)}`)
+      .then((r) => r.json())
+      .then(setMessages)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [email]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 10000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function send(e) {
+    e.preventDefault();
+    setError("");
+    if (!body.trim()) return;
+    try {
+      const res = await authFetch(`/wall/${encodeURIComponent(email)}`, {
+        method: "POST",
+        body: JSON.stringify({ body: body.trim() }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail || "Failed to send");
+        return;
+      }
+      setBody("");
+      load();
+    } catch {
+      /* handled */
+    }
+  }
+
+  return (
+    <div className="wall">
+      {!readOnly && (
+        <form className="wall-form" onSubmit={send}>
+          <input
+            className="grow"
+            placeholder={`Message ${name}… (visible to all admins)`}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+          />
+          <button type="submit">Send</button>
+        </form>
+      )}
+      {error && <p className="error">{error}</p>}
+      <div className="wall-list">
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            className="wall-msg"
+            style={{
+              background: actorTint(m.sender_name),
+              borderLeftColor: actorColor(m.sender_name),
+            }}
+          >
+            <span className="wall-sender" style={{ color: actorColor(m.sender_name) }}>
+              {m.sender_name}
+            </span>
+            <span className="wall-body">{m.body}</span>
+            <span className="wall-time">{timeAgo(m.created_at)}</span>
+          </div>
+        ))}
+        {messages.length === 0 && (
+          <div className="empty">No messages for {name} yet — be the first 👋</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -167,27 +364,7 @@ function Shell({ me, authFetch, logout }) {
 const PAGE_FIRST = 10; // small first page = instant paint
 const PAGE_MORE = 20;
 
-function actorColor(name) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
-  return `hsl(${h}, 62%, 46%)`;
-}
-
-function initials(name) {
-  const parts = name.trim().split(/\s+/);
-  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
-}
-
-function actionKind(action) {
-  if (/stock|inventory|quantity|csv/.test(action)) return "stock";
-  if (/order|grn|dispatch|deliver/.test(action)) return "order";
-  if (/expense|bill|invoice|paid|payment|payout|credit/.test(action)) return "money";
-  if (/admin|user|permission|role/.test(action)) return "people";
-  if (/price/.test(action)) return "price";
-  return "other";
-}
-
-function Feed({ me, authFetch }) {
+function Feed({ authFetch, actor }) {
   const [top, setTop] = useState([]); // freshest page, replaced by each poll
   const [older, setOlder] = useState([]); // paged history, appended
   const [cursor, setCursor] = useState(null); // {ts, id} for the next older page
@@ -199,30 +376,35 @@ function Feed({ me, authFetch }) {
   const [expanded, setExpanded] = useState(null); // group id with extras open
   const [loadingOlder, setLoadingOlder] = useState(false);
 
-  const load = useCallback((manual = false) => {
-    if (manual) setRefreshing(true);
-    authFetch(`/feed?limit=${PAGE_FIRST}`)
-      .then((r) => r.json())
-      .then((data) => {
-        setTop(data.events);
-        setUpdatedAt(new Date());
-        setLoaded(true);
-        setOlder((cur) => {
-          if (cur.length === 0) {
-            setCursor(
-              data.next_cursor_id
-                ? { ts: data.next_cursor_ts, id: data.next_cursor_id }
-                : null
-            );
-            setHasMore(data.has_more);
-          }
-          return cur;
-        });
-      })
-      .catch(() => {})
-      .finally(() => setRefreshing(false));
+  const actorQS = actor ? `&actor=${encodeURIComponent(actor)}` : "";
+
+  const load = useCallback(
+    (manual = false) => {
+      if (manual) setRefreshing(true);
+      authFetch(`/feed?limit=${PAGE_FIRST}${actorQS}`)
+        .then((r) => r.json())
+        .then((data) => {
+          setTop(data.events);
+          setUpdatedAt(new Date());
+          setLoaded(true);
+          setOlder((cur) => {
+            if (cur.length === 0) {
+              setCursor(
+                data.next_cursor_id
+                  ? { ts: data.next_cursor_ts, id: data.next_cursor_id }
+                  : null
+              );
+              setHasMore(data.has_more);
+            }
+            return cur;
+          });
+        })
+        .catch(() => {})
+        .finally(() => setRefreshing(false));
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    [actorQS]
+  );
 
   async function loadOlder() {
     if (!cursor || loadingOlder) return;
@@ -231,7 +413,7 @@ function Feed({ me, authFetch }) {
       const res = await authFetch(
         `/feed?limit=${PAGE_MORE}&cursor_ts=${encodeURIComponent(
           cursor.ts
-        )}&cursor_id=${cursor.id}`
+        )}&cursor_id=${cursor.id}${actorQS}`
       );
       const data = await res.json();
       setOlder((cur) => [...cur, ...data.events]);
@@ -336,9 +518,7 @@ function Feed({ me, authFetch }) {
                 <>
                   <button
                     className="link expand"
-                    onClick={() =>
-                      setExpanded(expanded === ev.id ? null : ev.id)
-                    }
+                    onClick={() => setExpanded(expanded === ev.id ? null : ev.id)}
                   >
                     {expanded === ev.id
                       ? "hide"
@@ -375,7 +555,11 @@ function Feed({ me, authFetch }) {
                 </button>
               </div>
               {openComments === ev.id && (
-                <Comments eventId={ev.id} authFetch={authFetch} onPosted={() => load(false)} />
+                <Comments
+                  eventId={ev.id}
+                  authFetch={authFetch}
+                  onPosted={() => load(false)}
+                />
               )}
             </div>
           </div>
@@ -384,7 +568,9 @@ function Feed({ me, authFetch }) {
       {events.length === 0 && (
         <div className="empty big">
           {loaded
-            ? "No updates yet — actions on the portals will appear here."
+            ? actor
+              ? `No recent activity from ${actor}.`
+              : "No updates yet — actions on the portals will appear here."
             : "Loading updates…"}
         </div>
       )}
@@ -431,7 +617,7 @@ function Comments({ eventId, authFetch, onPosted }) {
     <div className="comments">
       {comments.map((c) => (
         <div key={c.id} className="comment">
-          <strong>{c.admin_name}</strong>
+          <strong style={{ color: actorColor(c.admin_name) }}>{c.admin_name}</strong>
           <span>{c.body}</span>
           <span className="comment-time">{timeAgo(c.created_at)}</span>
         </div>
@@ -445,125 +631,6 @@ function Comments({ eventId, authFetch, onPosted }) {
         />
         <button type="submit">Post</button>
       </form>
-    </div>
-  );
-}
-
-// ---- Direct messages ----------------------------------------------------------
-
-function Messenger({ me, authFetch }) {
-  const [admins, setAdmins] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [body, setBody] = useState("");
-  const [error, setError] = useState("");
-  const scrollRef = useRef(null);
-
-  useEffect(() => {
-    authFetch("/admins")
-      .then((r) => r.json())
-      .then(setAdmins)
-      .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const loadThread = useCallback(() => {
-    if (!selected) return;
-    authFetch(`/messages?with_email=${encodeURIComponent(selected)}`)
-      .then((r) => r.json())
-      .then(setMessages)
-      .catch(() => {});
-  }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    setMessages([]);
-    if (!selected) return;
-    loadThread();
-    const t = setInterval(loadThread, 2000);
-    return () => clearInterval(t);
-  }, [selected, loadThread]);
-
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages]);
-
-  async function send(e) {
-    e.preventDefault();
-    setError("");
-    if (!selected || !body.trim()) return;
-    try {
-      const res = await authFetch("/messages", {
-        method: "POST",
-        body: JSON.stringify({ recipient: selected, body: body.trim() }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.detail || "Failed to send");
-        return;
-      }
-      setBody("");
-      loadThread();
-    } catch {
-      /* handled by authFetch */
-    }
-  }
-
-  const selectedAdmin = admins.find((a) => a.email === selected);
-
-  return (
-    <div className="messenger">
-      <aside className="sidebar">
-        <div className="people">
-          {admins.map((a) => (
-            <button
-              key={a.email}
-              className={`person ${a.email === selected ? "active" : ""}`}
-              onClick={() => setSelected(a.email)}
-            >
-              <span className="person-name">{a.name || a.email}</span>
-              <span className="person-email">{a.email}</span>
-            </button>
-          ))}
-          {admins.length === 0 && <div className="empty">No other admins.</div>}
-        </div>
-      </aside>
-
-      <main className="chat">
-        {!selected ? (
-          <div className="empty big">Pick an admin to start a conversation.</div>
-        ) : (
-          <>
-            <header className="chat-head">
-              <strong>{selectedAdmin?.name || selected}</strong>
-              <span className="chat-email">{selected}</span>
-            </header>
-            <div className="thread" ref={scrollRef}>
-              {messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`bubble ${m.sender === me.email ? "mine" : "theirs"}`}
-                >
-                  <div className="bubble-body">{m.body}</div>
-                  <div className="bubble-time">{timeAgo(m.created_at)}</div>
-                </div>
-              ))}
-              {messages.length === 0 && (
-                <div className="empty">No messages yet. Say hi 👋</div>
-              )}
-            </div>
-            {error && <p className="error chat-error">{error}</p>}
-            <form className="composer" onSubmit={send}>
-              <input
-                className="grow"
-                placeholder={`Message ${selectedAdmin?.name || selected}…`}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-              />
-              <button type="submit">Send</button>
-            </form>
-          </>
-        )}
-      </main>
     </div>
   );
 }
