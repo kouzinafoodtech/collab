@@ -1089,17 +1089,45 @@ button.link {
   font-size: 0.9rem;
 }
 
-.rf-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.tabs-mobile {
+  display: none;
 }
 
-.rf-section-head {
+.rf-group {
+  padding: 0;
+  overflow: hidden;
+}
+
+.rf-group-head {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  padding: 14px 16px;
+  font-weight: 700;
+}
+
+.rf-group-head:hover {
+  background: #fafbfc;
+  filter: none;
+}
+
+.rf-caret {
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.rf-caret.down {
+  transform: rotate(90deg);
+}
+
+.rf-group-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.95rem;
 }
 
 .rf-count {
@@ -1111,14 +1139,28 @@ button.link {
   padding: 2px 10px;
 }
 
-.rf-note {
-  font-size: 0.78rem;
-  margin-top: -4px;
+.rf-count.zero {
+  background: #d1fae5;
+  color: #047857;
 }
 
-.rf-card {
-  padding: 12px 14px;
+.rf-group-body {
+  border-top: 1px solid var(--line);
+  padding: 8px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rf-note {
+  font-size: 0.78rem;
+}
+
+.rf-item {
   border-left: 4px solid #ef4444;
+  background: #fffafa;
+  border-radius: 8px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1148,6 +1190,62 @@ button.link {
 
 .rf-sub {
   font-size: 0.82rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rf-flag-link {
+  text-decoration: none !important;
+  font-weight: 700;
+  color: #dc2626 !important;
+}
+
+.flag-form {
+  margin-top: 8px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flag-people {
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.flag-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  padding: 3px 4px;
+  cursor: pointer;
+}
+
+.flag-person input {
+  width: auto;
+}
+
+.flag-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.flag-status {
+  font-size: 0.8rem;
 }
 
 /* ---- Feedback ---- */
@@ -1673,11 +1771,22 @@ button.link {
     flex-wrap: wrap;
   }
 
-  /* Header collapses to logo + hamburger; everything moves into the menu. */
-  .tabs,
+  /* Header keeps Live + Red Flags pinned; the rest moves into the menu. */
+  .tabs-desktop,
   .portal-links,
   .topbar-me {
     display: none;
+  }
+
+  .tabs-mobile {
+    display: flex;
+    gap: 4px;
+    margin-left: 6px;
+  }
+
+  .tabs-mobile .tab {
+    padding: 7px 12px;
+    font-size: 0.9rem;
   }
 
   .menu-btn {
@@ -1687,7 +1796,12 @@ button.link {
 
   .topbar {
     flex-wrap: nowrap;
-    justify-content: space-between;
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  .brand {
+    font-size: 0.95rem;
   }
 
   .feed {

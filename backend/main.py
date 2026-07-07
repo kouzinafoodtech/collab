@@ -25,7 +25,10 @@ Storage:
 
 import json
 import os
+import smtplib
+import ssl
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Optional
 
@@ -235,6 +238,37 @@ EXCLUDED_ADMIN_EMAILS = {"cocoadmin@kftpl.com", "swiggy-review@kftpl.com"}
 
 def _excluded(email: Optional[str]) -> bool:
     return (email or "").lower() in EXCLUDED_ADMIN_EMAILS
+
+
+def email_enabled() -> bool:
+    return bool(os.environ.get("SMTP_HOST"))
+
+
+def send_email(recipients: list[str], subject: str, body: str) -> bool:
+    """Best-effort email via SMTP (configure SMTP_HOST/PORT/USER/PASS/FROM).
+    Disabled and a no-op until those env vars are set."""
+    host = os.environ.get("SMTP_HOST")
+    if not host or not recipients:
+        return False
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user = os.environ.get("SMTP_USER")
+    pw = os.environ.get("SMTP_PASS")
+    sender = os.environ.get("SMTP_FROM", user or "no-reply@kftpl.com")
+    try:
+        msg = EmailMessage()
+        msg["From"] = sender
+        msg["To"] = ", ".join(recipients)
+        msg["Subject"] = subject
+        msg.set_content(body)
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(host, port, timeout=15) as s:
+            s.starttls(context=ctx)
+            if user:
+                s.login(user, pw)
+            s.send_message(msg)
+        return True
+    except Exception:
+        return False
 
 
 def resolve_names(emails: set[str]) -> dict[str, str]:
@@ -1481,10 +1515,62 @@ def redflags(admin: dict = Depends(current_admin)):
             }
         ]
         total = 2
-    data = {"total": total, "rules": rules_out, "generated_at": _iso_utc(now)}
+    data = {
+        "total": total,
+        "rules": rules_out,
+        "generated_at": _iso_utc(now),
+        "email_enabled": email_enabled(),
+    }
     _redflag_cache["at"] = now
     _redflag_cache["data"] = data
     return data
+
+
+class FlagIn(BaseModel):
+    ref: int
+    entity: str = Field(..., max_length=255)
+    label: str = Field(..., max_length=64)  # e.g. "CoCo order"
+    state: Optional[str] = None
+    days_overdue: int = 0
+    recipients: list[str] = Field(..., min_length=1)
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+@api.post("/redflags/flag")
+def flag_to_admins(
+    payload: FlagIn, background_tasks: BackgroundTasks, admin: dict = Depends(current_admin)
+):
+    recipients = [e for e in dict.fromkeys(payload.recipients) if is_active_admin(e)]
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Pick at least one admin")
+    who = admin.get("name") or admin["email"]
+    line = (
+        f"🚩 {payload.label} #{payload.ref} · {payload.entity} · "
+        f"{payload.days_overdue}d GRN overdue"
+    )
+    if payload.note:
+        line += f" — {payload.note.strip()}"
+    with SessionLocal() as db:
+        for r in recipients:
+            db.add(MessageRow(sender=admin["email"], recipient=r, body=line, is_private=0))
+        db.commit()
+    emit_live_event(
+        who,
+        "redflag_raised",
+        f"flagged {payload.entity} · {payload.label} #{payload.ref}",
+        {"module": "Red Flags"},
+    )
+    emailed = False
+    if email_enabled():
+        subject = f"[Kouzina Live] Red flag: {payload.entity} — {payload.label} #{payload.ref}"
+        body = (
+            f"{line}\n\n"
+            f"Flagged by {who} via Kouzina Live.\n"
+            f"Open: https://live.kftpl.com"
+        )
+        background_tasks.add_task(send_email, recipients, subject, body)
+        emailed = True
+    return {"ok": True, "messaged": len(recipients), "emailed": emailed}
 
 
 # ---- Programs -------------------------------------------------------------------

@@ -244,7 +244,21 @@ function Shell({ me, authFetch, logout }) {
           <LogoMark />
           Kouzina <span className="brand-live">Live</span>
         </button>
-        <nav className="tabs">
+        <nav className="tabs tabs-mobile">
+          <button
+            className={`tab ${view === "live" ? "active" : ""}`}
+            onClick={goHome}
+          >
+            Live
+          </button>
+          <button
+            className={`tab ${view === "redflags" ? "active" : ""}`}
+            onClick={() => setView("redflags")}
+          >
+            🚩{redflags.total > 0 && <span className="tab-badge">{redflags.total}</span>}
+          </button>
+        </nav>
+        <nav className="tabs tabs-desktop">
           <button
             className={`tab ${view === "live" ? "active" : ""}`}
             onClick={goHome}
@@ -388,7 +402,9 @@ function Shell({ me, authFetch, logout }) {
           )}
         </div>
       )}
-      {view === "redflags" && <RedFlags data={redflags} />}
+      {view === "redflags" && (
+        <RedFlags data={redflags} admins={admins} authFetch={authFetch} />
+      )}
       {view === "programs" && (
         <Programs admins={admins} authFetch={authFetch} />
       )}
@@ -528,7 +544,10 @@ function PersonPanel({ person, me, authFetch, onClose }) {
 
 // ---- Red flags -----------------------------------------------------------------
 
-function RedFlags({ data }) {
+function RedFlags({ data, admins, authFetch }) {
+  const [open, setOpen] = useState(null); // expanded rule key
+  const [flagging, setFlagging] = useState(null); // "rulekey-ref" being flagged
+
   return (
     <main className="hub">
       <div className="rf-banner">
@@ -536,36 +555,148 @@ function RedFlags({ data }) {
         {data.generated_at && (
           <span className="muted"> Last checked {timeAgo(data.generated_at)} ago.</span>
         )}
+        {data.email_enabled === false && (
+          <span className="muted"> · flagging sends in-app messages (email not configured).</span>
+        )}
       </div>
-      {data.rules.map((rule) => (
-        <section key={rule.key} className="rf-section">
-          <div className="rf-section-head">
-            <strong>{rule.label}</strong>
-            <span className="rf-count">{rule.count}</span>
-          </div>
-          <div className="muted rf-note">
-            Orders from the last {rule.window_days} days, pending beyond {rule.sla_days}{" "}
-            days.
-          </div>
-          {rule.flags.map((f) => (
-            <article key={`${rule.key}-${f.ref}`} className="card rf-card">
-              <div className="rf-row">
-                <strong className="rf-entity">{f.entity}</strong>
-                <span className="chip chip-other">{f.state}</span>
-                <span className="rf-over">{f.days_overdue}d overdue</span>
+      {data.rules.map((rule) => {
+        const isOpen = open === rule.key;
+        return (
+          <section key={rule.key} className="card rf-group">
+            <button
+              className="rf-group-head"
+              onClick={() => setOpen(isOpen ? null : rule.key)}
+            >
+              <span className={`rf-caret ${isOpen ? "down" : ""}`}>▸</span>
+              <span className="rf-group-label">{rule.label}</span>
+              <span className={`rf-count ${rule.count === 0 ? "zero" : ""}`}>
+                {rule.count}
+              </span>
+            </button>
+            {isOpen && (
+              <div className="rf-group-body">
+                <div className="muted rf-note">
+                  Orders from the last {rule.window_days} days, pending beyond{" "}
+                  {rule.sla_days} days.
+                </div>
+                {rule.flags.map((f) => {
+                  const fid = `${rule.key}-${f.ref}`;
+                  return (
+                    <div key={fid} className="rf-item">
+                      <div className="rf-row">
+                        <strong className="rf-entity">{f.entity}</strong>
+                        <span className="chip chip-other">{f.state}</span>
+                        <span className="rf-over">{f.days_overdue}d overdue</span>
+                      </div>
+                      <div className="rf-sub muted">
+                        {rule.ref_label} #{f.ref} · pending since {formatWhen(f.since)}
+                        <button
+                          className="link rf-flag-link"
+                          onClick={() => setFlagging(flagging === fid ? null : fid)}
+                        >
+                          🚩 flag to…
+                        </button>
+                      </div>
+                      {flagging === fid && (
+                        <FlagForm
+                          admins={admins}
+                          authFetch={authFetch}
+                          payload={{
+                            ref: f.ref,
+                            entity: f.entity,
+                            label: rule.ref_label,
+                            state: f.state,
+                            days_overdue: f.days_overdue,
+                          }}
+                          onDone={() => setFlagging(null)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+                {rule.count === 0 && (
+                  <div className="empty">No breaches — all clear ✅</div>
+                )}
               </div>
-              <div className="rf-sub muted">
-                {rule.ref_label} #{f.ref} · pending since {formatWhen(f.since)}
-              </div>
-            </article>
-          ))}
-          {rule.count === 0 && <div className="empty">No breaches — all clear ✅</div>}
-        </section>
-      ))}
+            )}
+          </section>
+        );
+      })}
       {data.rules.length === 0 && (
         <div className="empty big">Checking for SLA breaches…</div>
       )}
     </main>
+  );
+}
+
+function FlagForm({ admins, authFetch, payload, onDone }) {
+  const [picked, setPicked] = useState([]);
+  const [note, setNote] = useState("");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+
+  function toggle(email) {
+    setPicked((cur) =>
+      cur.includes(email) ? cur.filter((e) => e !== email) : [...cur, email]
+    );
+  }
+
+  async function send() {
+    if (picked.length === 0) return;
+    setStatus("sending");
+    const res = await authFetch("/redflags/flag", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, recipients: picked, note: note.trim() || null }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      const data = await res.json();
+      setStatus(
+        `Flagged to ${data.messaged} admin${data.messaged > 1 ? "s" : ""}` +
+          (data.emailed ? " · emailed" : "")
+      );
+      setTimeout(onDone, 1200);
+    } else {
+      setStatus("Failed — try again");
+    }
+  }
+
+  const list = admins.filter((a) =>
+    (a.name || a.email).toLowerCase().includes(query.toLowerCase())
+  );
+
+  return (
+    <div className="flag-form">
+      <input
+        className="grow"
+        placeholder="Search admins…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      <div className="flag-people">
+        {list.map((a) => (
+          <label key={a.email} className="flag-person">
+            <input
+              type="checkbox"
+              checked={picked.includes(a.email)}
+              onChange={() => toggle(a.email)}
+            />
+            {a.name || a.email}
+          </label>
+        ))}
+      </div>
+      <input
+        className="grow"
+        placeholder="Add a note (optional)…"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <div className="flag-actions">
+        <span className="muted flag-status">{status}</span>
+        <button onClick={send} disabled={picked.length === 0 || status === "sending"}>
+          {picked.length ? `Flag to ${picked.length}` : "Flag"}
+        </button>
+      </div>
+    </div>
   );
 }
 
