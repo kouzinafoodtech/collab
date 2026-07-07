@@ -43,6 +43,32 @@ function actionKind(action) {
   return "other";
 }
 
+function LogoMark({ size = 26 }) {
+  return (
+    <svg viewBox="0 0 64 64" width={size} height={size} className="logo-mark" aria-hidden>
+      <defs>
+        <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#4f46e5" />
+          <stop offset="1" stopColor="#7c3aed" />
+        </linearGradient>
+      </defs>
+      <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#lg)" />
+      <text
+        x="31"
+        y="46"
+        fontFamily="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        fontSize="38"
+        fontWeight="800"
+        fill="#fff"
+        textAnchor="middle"
+      >
+        K
+      </text>
+      <circle cx="50" cy="15" r="7.5" fill="#ef4444" stroke="#fff" strokeWidth="3" />
+    </svg>
+  );
+}
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem("token") || "");
   const [me, setMe] = useState(() => {
@@ -124,7 +150,7 @@ function Login({ onLoggedIn }) {
     <div className="app center">
       <form onSubmit={submit} className="card login">
         <div className="brand login-brand">
-          <span className="live-dot" />
+          <LogoMark size={34} />
           Kouzina <span className="brand-live">Live</span>
         </div>
         <p className="subtitle">Admins only. Sign in with your work email.</p>
@@ -200,7 +226,7 @@ function Shell({ me, authFetch, logout }) {
     <div className="shell">
       <header className="topbar">
         <div className="brand">
-          <span className="live-dot" />
+          <LogoMark />
           Kouzina <span className="brand-live">Live</span>
         </div>
         <nav className="tabs">
