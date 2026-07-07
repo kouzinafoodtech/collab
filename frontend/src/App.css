@@ -861,6 +861,209 @@ button.link {
   color: #b91c1c;
 }
 
+.kind-program {
+  border-left-color: #06b6d4;
+}
+
+.chip-program {
+  background: #cffafe;
+  color: #0e7490;
+}
+
+.kind-feedback {
+  border-left-color: #f43f5e;
+}
+
+.chip-feedback {
+  background: #ffe4e6;
+  color: #be123c;
+}
+
+.badge-live {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+/* ---- Programs ---- */
+.hub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inactive-toggle {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.prog-card {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prog-inactive {
+  opacity: 0.55;
+}
+
+.prog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.prog-name {
+  font-size: 1rem;
+}
+
+.status-select {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  padding: 5px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  background: #fff;
+}
+
+.status-select.st-not_started {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.status-select.st-in_progress {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
+.status-select.st-complete {
+  background: #d1fae5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+
+.prog-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+
+.prog-owner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+}
+
+.overdue {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+.prog-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+}
+
+.prog-actions .link {
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.prog-edit {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+.person-programs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.prog-chip {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid var(--line);
+}
+
+.prog-chip.st-in_progress {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.prog-chip.st-complete {
+  background: #d1fae5;
+  color: #047857;
+}
+
+/* ---- Feedback ---- */
+.fb-banner {
+  background: linear-gradient(90deg, rgba(244, 63, 94, 0.08), rgba(124, 58, 237, 0.08));
+  border: 1px solid #fecdd3;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+}
+
+.fb-card {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-left: 4px solid #f43f5e;
+}
+
+.fb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fb-body {
+  font-size: 0.95rem;
+  word-break: break-word;
+}
+
+.st-pill {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 2px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.st-fb-open {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.st-fb-actioned {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.fb-action {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.88rem;
+}
+
 .event-row {
   display: flex;
   gap: 12px;
@@ -1273,6 +1476,17 @@ button.link {
     gap: 10px;
     padding: 8px 12px;
     flex-wrap: wrap;
+  }
+
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tab {
+    white-space: nowrap;
+    padding: 7px 11px;
   }
 
   .portal-links {

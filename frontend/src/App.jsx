@@ -36,6 +36,8 @@ function initials(name) {
 
 function actionKind(action) {
   if (/fail|error|reject|cancel/.test(action)) return "alert";
+  if (/feedback/.test(action)) return "feedback";
+  if (/program/.test(action)) return "program";
   if (/stock|inventory|quantity|csv/.test(action)) return "stock";
   if (/order|grn|dispatch|deliver|load/.test(action)) return "order";
   if (/expense|bill|invoice|paid|payment|payout|credit/.test(action)) return "money";
@@ -244,6 +246,18 @@ function Shell({ me, authFetch, logout }) {
             Live
           </button>
           <button
+            className={`tab ${view === "programs" ? "active" : ""}`}
+            onClick={() => setView("programs")}
+          >
+            Programs
+          </button>
+          <button
+            className={`tab ${view === "feedback" ? "active" : ""}`}
+            onClick={() => setView("feedback")}
+          >
+            Feedback
+          </button>
+          <button
             className={`tab ${view === "messages" ? "active" : ""}`}
             onClick={() => setView("messages")}
           >
@@ -299,7 +313,7 @@ function Shell({ me, authFetch, logout }) {
             open={peopleOpen}
             onCloseDrawer={() => setPeopleOpen(false)}
             onSelect={(p) => {
-              openPerson(p);
+              openActor(p.actor); // full fetch: brings email + owned programs
               setPeopleOpen(false);
             }}
             onClear={() => {
@@ -314,6 +328,10 @@ function Shell({ me, authFetch, logout }) {
           )}
         </div>
       )}
+      {view === "programs" && (
+        <Programs admins={admins} authFetch={authFetch} />
+      )}
+      {view === "feedback" && <Feedback authFetch={authFetch} />}
       {view === "messages" && (
         <MessagesHub me={me} admins={admins} authFetch={authFetch} />
       )}
@@ -424,6 +442,16 @@ function PersonPanel({ person, me, authFetch, onClose }) {
           ✕ close
         </button>
       </div>
+      {person.programs?.length > 0 && (
+        <div className="person-programs">
+          {person.programs.map((p) => (
+            <span key={p.id} className={`prog-chip st-${p.status}`}>
+              📌 {p.name}
+              {p.eta ? ` · ETA ${p.eta}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
       {person.email && person.email !== me.email ? (
         <Wall email={person.email} name={person.actor} authFetch={authFetch} />
       ) : person.email === me.email ? (
@@ -434,6 +462,364 @@ function PersonPanel({ person, me, authFetch, onClose }) {
         </p>
       )}
     </section>
+  );
+}
+
+// ---- Programs -----------------------------------------------------------------
+
+const STATUS_OPTS = [
+  ["not_started", "Not Started"],
+  ["in_progress", "In Progress"],
+  ["complete", "Complete"],
+];
+
+function Programs({ admins, authFetch }) {
+  const [items, setItems] = useState([]);
+  const [showNew, setShowNew] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
+  const [form, setForm] = useState({ name: "", owner_email: "", eta: "" });
+
+  const load = useCallback(() => {
+    authFetch("/programs")
+      .then((r) => r.json())
+      .then(setItems)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(load, [load]);
+
+  async function create(e) {
+    e.preventDefault();
+    if (!form.name.trim()) return;
+    const res = await authFetch("/programs", {
+      method: "POST",
+      body: JSON.stringify({
+        name: form.name.trim(),
+        owner_email: form.owner_email || null,
+        eta: form.eta || null,
+      }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setForm({ name: "", owner_email: "", eta: "" });
+      setShowNew(false);
+      load();
+    }
+  }
+
+  async function patch(id, body) {
+    const res = await authFetch(`/programs/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    if (res && res.ok) load();
+  }
+
+  const visible = items.filter((p) => showInactive || p.active);
+
+  return (
+    <main className="hub">
+      <div className="hub-head">
+        <button onClick={() => setShowNew(!showNew)}>
+          {showNew ? "Cancel" : "+ New program"}
+        </button>
+        <label className="priv-toggle inactive-toggle">
+          <input
+            type="checkbox"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+          />
+          show deactivated
+        </label>
+      </div>
+      {showNew && (
+        <form className="card composer-card" onSubmit={create}>
+          <input
+            className="grow"
+            autoFocus
+            placeholder="Program name…"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
+          <select
+            value={form.owner_email}
+            onChange={(e) => setForm({ ...form, owner_email: e.target.value })}
+          >
+            <option value="">Owner…</option>
+            {admins.map((a) => (
+              <option key={a.email} value={a.email}>
+                {a.name || a.email}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={form.eta}
+            onChange={(e) => setForm({ ...form, eta: e.target.value })}
+          />
+          <button type="submit">Create</button>
+        </form>
+      )}
+      {visible.map((p) => (
+        <ProgramCard key={p.id} p={p} admins={admins} onPatch={patch} authFetch={authFetch} />
+      ))}
+      {visible.length === 0 && (
+        <div className="empty big">No programs yet — create the first one.</div>
+      )}
+    </main>
+  );
+}
+
+function ProgramCard({ p, admins, onPatch, authFetch }) {
+  const [editing, setEditing] = useState(false);
+  const [showUpdates, setShowUpdates] = useState(false);
+  const [edit, setEdit] = useState({
+    name: p.name,
+    owner_email: p.owner_email || "",
+    eta: p.eta || "",
+  });
+  const overdue =
+    p.eta && p.status !== "complete" && new Date(p.eta) < new Date(new Date().toDateString());
+
+  function saveEdit(e) {
+    e.preventDefault();
+    onPatch(p.id, {
+      name: edit.name.trim(),
+      owner_email: edit.owner_email,
+      eta: edit.eta || null,
+    });
+    setEditing(false);
+  }
+
+  return (
+    <article className={`card prog-card ${p.active ? "" : "prog-inactive"}`}>
+      <div className="prog-head">
+        <strong className="prog-name">{p.name}</strong>
+        <select
+          className={`status-select st-${p.status}`}
+          value={p.status}
+          onChange={(e) => onPatch(p.id, { status: e.target.value })}
+          disabled={!p.active}
+        >
+          {STATUS_OPTS.map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="prog-meta">
+        {p.owner_name ? (
+          <span className="prog-owner">
+            <span className="avatar sm" style={{ background: actorColor(p.owner_name) }}>
+              {initials(p.owner_name)}
+            </span>
+            {p.owner_name}
+          </span>
+        ) : (
+          <span className="muted">no owner</span>
+        )}
+        <span className={overdue ? "overdue" : "muted"}>
+          {p.eta ? `ETA ${p.eta}${overdue ? " · overdue" : ""}` : "no ETA"}
+        </span>
+        <span className="prog-actions">
+          <button className="link" onClick={() => setShowUpdates(!showUpdates)}>
+            updates ({p.updates_count})
+          </button>
+          <button className="link" onClick={() => setEditing(!editing)}>
+            edit
+          </button>
+          <button
+            className="link"
+            onClick={() => onPatch(p.id, { active: !p.active })}
+          >
+            {p.active ? "deactivate" : "reactivate"}
+          </button>
+        </span>
+      </div>
+      {editing && (
+        <form className="composer-card prog-edit" onSubmit={saveEdit}>
+          <input
+            className="grow"
+            value={edit.name}
+            onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+          />
+          <select
+            value={edit.owner_email}
+            onChange={(e) => setEdit({ ...edit, owner_email: e.target.value })}
+          >
+            <option value="">Owner…</option>
+            {admins.map((a) => (
+              <option key={a.email} value={a.email}>
+                {a.name || a.email}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={edit.eta}
+            onChange={(e) => setEdit({ ...edit, eta: e.target.value })}
+          />
+          <button type="submit">Save</button>
+        </form>
+      )}
+      {showUpdates && <ProgramUpdates programId={p.id} authFetch={authFetch} />}
+    </article>
+  );
+}
+
+function ProgramUpdates({ programId, authFetch }) {
+  const [updates, setUpdates] = useState([]);
+  const [body, setBody] = useState("");
+
+  const load = useCallback(() => {
+    authFetch(`/programs/${programId}/updates`)
+      .then((r) => r.json())
+      .then(setUpdates)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [programId]);
+
+  useEffect(load, [load]);
+
+  async function post(e) {
+    e.preventDefault();
+    if (!body.trim()) return;
+    const res = await authFetch(`/programs/${programId}/updates`, {
+      method: "POST",
+      body: JSON.stringify({ body: body.trim() }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setBody("");
+      load();
+    }
+  }
+
+  return (
+    <div className="comments">
+      <form onSubmit={post} className="comment-form">
+        <input
+          className="grow"
+          placeholder="Add a progress update…"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        <button type="submit">Post</button>
+      </form>
+      {updates.map((u) => (
+        <div key={u.id} className="comment">
+          <strong style={{ color: actorColor(u.author_name) }}>{u.author_name}</strong>
+          <span>{u.body}</span>
+          <span className="comment-time">{timeAgo(u.created_at)}</span>
+        </div>
+      ))}
+      {updates.length === 0 && <div className="empty">No updates yet.</div>}
+    </div>
+  );
+}
+
+// ---- Anonymous feedback ---------------------------------------------------------
+
+function Feedback({ authFetch }) {
+  const [items, setItems] = useState([]);
+  const [body, setBody] = useState("");
+  const [actionFor, setActionFor] = useState(null);
+  const [actionText, setActionText] = useState("");
+  const [sent, setSent] = useState(false);
+
+  const load = useCallback(() => {
+    authFetch("/feedback")
+      .then((r) => r.json())
+      .then(setItems)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(load, [load]);
+
+  async function post(e) {
+    e.preventDefault();
+    if (!body.trim()) return;
+    const res = await authFetch("/feedback", {
+      method: "POST",
+      body: JSON.stringify({ body: body.trim() }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setBody("");
+      setSent(true);
+      setTimeout(() => setSent(false), 3000);
+      load();
+    }
+  }
+
+  async function saveAction(id) {
+    if (!actionText.trim()) return;
+    const res = await authFetch(`/feedback/${id}/action`, {
+      method: "POST",
+      body: JSON.stringify({ action_item: actionText.trim() }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setActionFor(null);
+      setActionText("");
+      load();
+    }
+  }
+
+  return (
+    <main className="hub">
+      <div className="fb-banner">
+        🎭 Feedback is <strong>anonymous</strong> — your name is never stored, anywhere.
+      </div>
+      <form className="card composer-card" onSubmit={post}>
+        <input
+          className="grow"
+          placeholder="Share feedback anonymously…"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        <button type="submit">{sent ? "Sent ✓" : "Send"}</button>
+      </form>
+      {items.map((f) => (
+        <article key={f.id} className="card fb-card">
+          <div className="fb-head">
+            <span className={`st-pill st-fb-${f.status}`}>
+              {f.status === "actioned" ? "Actioned" : "Open"}
+            </span>
+            <span className="event-time">{formatWhen(f.created_at)}</span>
+          </div>
+          <div className="fb-body">{f.body}</div>
+          {f.action_item ? (
+            <div className="fb-action">
+              ✅ <strong>{f.action_by}</strong>: {f.action_item}
+            </div>
+          ) : actionFor === f.id ? (
+            <form
+              className="comment-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveAction(f.id);
+              }}
+            >
+              <input
+                className="grow"
+                autoFocus
+                placeholder="Action item…"
+                value={actionText}
+                onChange={(e) => setActionText(e.target.value)}
+              />
+              <button type="submit">Save</button>
+            </form>
+          ) : (
+            <button className="link reply-link" onClick={() => setActionFor(f.id)}>
+              + add action item
+            </button>
+          )}
+        </article>
+      ))}
+      {items.length === 0 && (
+        <div className="empty big">No feedback yet — be the first (anonymously).</div>
+      )}
+    </main>
   );
 }
 

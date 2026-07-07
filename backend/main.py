@@ -137,6 +137,41 @@ class EventCommentRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class ProgramRow(Base):
+    __tablename__ = "programs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    owner_email = Column(String(255), nullable=True)
+    owner_name = Column(String(255), nullable=True)
+    eta = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(20), nullable=False, default="not_started")
+    active = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProgramUpdateRow(Base):
+    __tablename__ = "program_updates"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    program_id = Column(Integer, nullable=False, index=True)
+    author_email = Column(String(255), nullable=False)
+    author_name = Column(String(255), nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FeedbackRow(Base):
+    __tablename__ = "feedback"
+    # Deliberately NO author column — feedback is anonymous by design.
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    body = Column(Text, nullable=False)
+    action_item = Column(Text, nullable=True)
+    action_by = Column(String(255), nullable=True)
+    action_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(16), nullable=False, default="open")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class LiveLoginRow(Base):
     __tablename__ = "live_logins"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -441,8 +476,9 @@ SOURCES = [
 ]
 
 # Keep the feed scoped to the registered portals: drop events from sources
-# that were removed from the registry (idempotent, runs at boot).
-_ACTIVE_PORTALS = sorted({s["portal"] for s in SOURCES})
+# that were removed from the registry (idempotent, runs at boot). "LIVE" is
+# this app's own portal (programs, feedback) — never clean it up.
+_ACTIVE_PORTALS = sorted({s["portal"] for s in SOURCES} | {"LIVE"})
 with SessionLocal() as _db:
     _db.query(FeedEventRow).filter(
         ~FeedEventRow.portal.in_(_ACTIVE_PORTALS)
@@ -451,6 +487,66 @@ with SessionLocal() as _db:
         ~IngestStateRow.source.in_([s["name"] for s in SOURCES])
     ).delete(synchronize_session=False)
     _db.commit()
+
+STATUS_LABELS = {
+    "not_started": "Not Started",
+    "in_progress": "In Progress",
+    "complete": "Complete",
+}
+
+
+def emit_live_event(actor: str, action: str, summary: str, details: Optional[dict] = None):
+    """Publish an in-app event (programs, feedback) to the feed as portal LIVE."""
+    with SessionLocal() as db:
+        for _ in range(3):  # retry on the rare source_id race between replicas
+            try:
+                next_id = (
+                    db.query(func.max(FeedEventRow.source_id))
+                    .filter(FeedEventRow.source == "live")
+                    .scalar()
+                    or 0
+                ) + 1
+                db.add(
+                    FeedEventRow(
+                        portal="LIVE",
+                        source="live",
+                        source_id=next_id,
+                        actor=actor,
+                        action=action,
+                        summary=summary,
+                        details=json.dumps(details) if details else None,
+                        happened_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    )
+                )
+                db.commit()
+                return
+            except Exception:
+                db.rollback()
+
+
+# Seed the first programs once (idempotent: only when the table is empty).
+with SessionLocal() as _db:
+    if _db.query(ProgramRow).count() == 0:
+        _eta = datetime(2026, 7, 31)
+        _db.add(
+            ProgramRow(
+                name="Use of retort instead of frozen food",
+                eta=_eta,
+                status="not_started",
+                created_by="system",
+            )
+        )
+        _db.add(
+            ProgramRow(
+                name="V2 UP Menu",
+                owner_email="pawan.kumar@kftpl.com",
+                owner_name="Pawan",
+                eta=_eta,
+                status="not_started",
+                created_by="system",
+            )
+        )
+        _db.commit()
 
 
 def _seed_dev_events(db):
@@ -738,7 +834,30 @@ def person(actor: str, admin: dict = Depends(current_admin)):
         )
     if _excluded(email):
         email = None
-    return {"actor": actor, "count": count, "email": email}
+    owner_conds = [ProgramRow.owner_name == actor]
+    if email:
+        owner_conds.append(ProgramRow.owner_email == email)
+    with SessionLocal() as db:
+        prog_rows = (
+            db.query(ProgramRow)
+            .filter(ProgramRow.active == 1, or_(*owner_conds))
+            .order_by(ProgramRow.eta.asc())
+            .all()
+        )
+    return {
+        "actor": actor,
+        "count": count,
+        "email": email,
+        "programs": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "status": p.status,
+                "eta": p.eta.date().isoformat() if p.eta else None,
+            }
+            for p in prog_rows
+        ],
+    }
 
 
 # ---- Messages hub (public tree + private) ------------------------------------
@@ -1245,6 +1364,268 @@ def send_message(body: MessageIn, admin: dict = Depends(current_admin)):
         db.add(row)
         db.commit()
         return _serialize_message(row)
+
+
+# ---- Programs -------------------------------------------------------------------
+
+class ProgramIn(BaseModel):
+    name: str = Field(..., min_length=2, max_length=255)
+    owner_email: Optional[str] = None
+    eta: Optional[str] = None  # YYYY-MM-DD
+
+
+class ProgramPatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    owner_email: Optional[str] = None
+    eta: Optional[str] = None
+    status: Optional[str] = None
+    active: Optional[bool] = None
+
+
+def _parse_eta(eta: Optional[str]):
+    if not eta:
+        return None
+    try:
+        return datetime.fromisoformat(eta)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ETA must be YYYY-MM-DD")
+
+
+def _owner_fields(owner_email: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not owner_email:
+        return None, None
+    names = resolve_names({owner_email})
+    return owner_email, names.get(owner_email) or owner_email.split("@")[0]
+
+
+def _serialize_program(p: ProgramRow, updates_count: int = 0) -> dict:
+    return {
+        "id": p.id,
+        "name": p.name,
+        "owner_email": p.owner_email,
+        "owner_name": p.owner_name,
+        "eta": p.eta.date().isoformat() if p.eta else None,
+        "status": p.status,
+        "active": bool(p.active),
+        "updates_count": updates_count,
+        "created_at": _iso_utc(p.created_at),
+    }
+
+
+@api.get("/programs")
+def list_programs(admin: dict = Depends(current_admin)):
+    with SessionLocal() as db:
+        rows = db.query(ProgramRow).order_by(ProgramRow.active.desc(), ProgramRow.eta.asc()).all()
+        counts = dict(
+            db.query(ProgramUpdateRow.program_id, func.count()).group_by(
+                ProgramUpdateRow.program_id
+            )
+        )
+    return [_serialize_program(p, counts.get(p.id, 0)) for p in rows]
+
+
+@api.post("/programs", status_code=201)
+def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
+    owner_email, owner_name = _owner_fields(payload.owner_email)
+    with SessionLocal() as db:
+        row = ProgramRow(
+            name=payload.name.strip(),
+            owner_email=owner_email,
+            owner_name=owner_name,
+            eta=_parse_eta(payload.eta),
+            status="not_started",
+            created_by=admin["email"],
+        )
+        db.add(row)
+        db.commit()
+        result = _serialize_program(row)
+    emit_live_event(
+        admin.get("name") or admin["email"],
+        "program_created",
+        "created program",
+        {"name": result["name"], "module": "Programs", "eta": result["eta"], "owner": owner_name},
+    )
+    return result
+
+
+@api.patch("/programs/{program_id}")
+def patch_program(program_id: int, payload: ProgramPatch, admin: dict = Depends(current_admin)):
+    actor = admin.get("name") or admin["email"]
+    with SessionLocal() as db:
+        row = db.get(ProgramRow, program_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Program not found")
+        events = []
+        if payload.status is not None and payload.status != row.status:
+            if payload.status not in STATUS_LABELS:
+                raise HTTPException(status_code=400, detail="Bad status")
+            events.append(
+                (
+                    "program_status_changed",
+                    "changed program status",
+                    {
+                        "name": row.name,
+                        "module": "Programs",
+                        "status": {
+                            "from": STATUS_LABELS[row.status],
+                            "to": STATUS_LABELS[payload.status],
+                        },
+                    },
+                )
+            )
+            row.status = payload.status
+        if payload.active is not None and bool(row.active) != payload.active:
+            row.active = 1 if payload.active else 0
+            verb = "reactivated program" if payload.active else "deactivated program"
+            events.append(
+                (
+                    "program_deactivated" if not payload.active else "program_reactivated",
+                    verb,
+                    {"name": row.name, "module": "Programs"},
+                )
+            )
+        edited = False
+        if payload.name is not None and payload.name.strip() != row.name:
+            row.name = payload.name.strip()
+            edited = True
+        if payload.owner_email is not None:
+            row.owner_email, row.owner_name = _owner_fields(payload.owner_email or None)
+            edited = True
+        if payload.eta is not None:
+            row.eta = _parse_eta(payload.eta)
+            edited = True
+        if edited:
+            events.append(
+                (
+                    "program_edited",
+                    "edited program",
+                    {"name": row.name, "module": "Programs", "owner": row.owner_name,
+                     "eta": row.eta.date().isoformat() if row.eta else None},
+                )
+            )
+        db.commit()
+        result = _serialize_program(row)
+    for action, summary, details in events:
+        emit_live_event(actor, action, summary, details)
+    return result
+
+
+@api.get("/programs/{program_id}/updates")
+def program_updates(program_id: int, admin: dict = Depends(current_admin)):
+    with SessionLocal() as db:
+        rows = (
+            db.query(ProgramUpdateRow)
+            .filter_by(program_id=program_id)
+            .order_by(ProgramUpdateRow.id.desc())
+            .limit(50)
+            .all()
+        )
+    return [
+        {
+            "id": r.id,
+            "author_name": r.author_name or r.author_email,
+            "body": r.body,
+            "created_at": _iso_utc(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+@api.post("/programs/{program_id}/updates", status_code=201)
+def add_program_update(
+    program_id: int, payload: CommentIn, admin: dict = Depends(current_admin)
+):
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Update cannot be empty")
+    actor = admin.get("name") or admin["email"]
+    with SessionLocal() as db:
+        prog = db.get(ProgramRow, program_id)
+        if not prog:
+            raise HTTPException(status_code=404, detail="Program not found")
+        db.add(
+            ProgramUpdateRow(
+                program_id=program_id,
+                author_email=admin["email"],
+                author_name=admin.get("name"),
+                body=body,
+            )
+        )
+        db.commit()
+        prog_name = prog.name
+    emit_live_event(
+        actor,
+        "program_update_posted",
+        f"posted update · “{body[:70]}”",
+        {"name": prog_name, "module": "Programs"},
+    )
+    return {"ok": True}
+
+
+# ---- Anonymous feedback -----------------------------------------------------------
+
+class ActionIn(BaseModel):
+    action_item: str = Field(..., min_length=1, max_length=1000)
+
+
+@api.get("/feedback")
+def list_feedback(admin: dict = Depends(current_admin)):
+    with SessionLocal() as db:
+        rows = db.query(FeedbackRow).order_by(FeedbackRow.id.desc()).limit(100).all()
+    return [
+        {
+            "id": r.id,
+            "body": r.body,
+            "status": r.status,
+            "action_item": r.action_item,
+            "action_by": r.action_by,
+            "action_at": _iso_utc(r.action_at),
+            "created_at": _iso_utc(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+@api.post("/feedback", status_code=201)
+def add_feedback(payload: CommentIn, admin: dict = Depends(current_admin)):
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Feedback cannot be empty")
+    # The author is intentionally NOT stored anywhere.
+    with SessionLocal() as db:
+        db.add(FeedbackRow(body=body))
+        db.commit()
+    emit_live_event(
+        "Anonymous",
+        "feedback_received",
+        f"shared feedback · “{body[:70]}”",
+        {"module": "Feedback"},
+    )
+    return {"ok": True}
+
+
+@api.post("/feedback/{feedback_id}/action")
+def set_feedback_action(
+    feedback_id: int, payload: ActionIn, admin: dict = Depends(current_admin)
+):
+    actor = admin.get("name") or admin["email"]
+    item = payload.action_item.strip()
+    with SessionLocal() as db:
+        row = db.get(FeedbackRow, feedback_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        row.action_item = item
+        row.action_by = actor
+        row.action_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        row.status = "actioned"
+        db.commit()
+    emit_live_event(
+        actor,
+        "feedback_action_added",
+        f"added action item · “{item[:70]}”",
+        {"module": "Feedback"},
+    )
+    return {"ok": True}
 
 
 app.mount("/api", api)
