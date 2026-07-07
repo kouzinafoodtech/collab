@@ -620,10 +620,22 @@ button.link {
   box-shadow: 0 1px 8px rgba(24, 32, 38, 0.04);
 }
 
+.brand-btn {
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.brand-btn:hover {
+  filter: none;
+  opacity: 0.85;
+}
+
 .brand {
   display: flex;
   align-items: center;
   gap: 8px;
+  background: none;
   font-weight: 800;
   font-size: 1.05rem;
   background: linear-gradient(90deg, var(--brand), var(--brand-2));

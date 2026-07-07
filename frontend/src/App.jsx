@@ -222,17 +222,22 @@ function Shell({ me, authFetch, logout }) {
     }
   }
 
+  function goHome() {
+    setPerson(null);
+    setView("live");
+  }
+
   return (
     <div className="shell">
       <header className="topbar">
-        <div className="brand">
+        <button className="brand brand-btn" onClick={goHome} title="Go to the live feed">
           <LogoMark />
           Kouzina <span className="brand-live">Live</span>
-        </div>
+        </button>
         <nav className="tabs">
           <button
             className={`tab ${view === "live" ? "active" : ""}`}
-            onClick={() => setView("live")}
+            onClick={goHome}
           >
             Live
           </button>
