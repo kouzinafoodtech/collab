@@ -193,11 +193,16 @@ function Shell({ me, authFetch, logout }) {
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
   const [admins, setAdmins] = useState([]);
+  const [redflags, setRedflags] = useState({ total: 0, rules: [] });
 
   const loadBoard = useCallback(() => {
     authFetch("/leaderboard")
       .then((r) => r.json())
       .then(setBoard)
+      .catch(() => {});
+    authFetch("/redflags")
+      .then((r) => r.json())
+      .then(setRedflags)
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -245,6 +250,13 @@ function Shell({ me, authFetch, logout }) {
             onClick={goHome}
           >
             Live
+          </button>
+          <button
+            className={`tab ${view === "redflags" ? "active" : ""}`}
+            onClick={() => setView("redflags")}
+          >
+            🚩 Red Flags
+            {redflags.total > 0 && <span className="tab-badge">{redflags.total}</span>}
           </button>
           <button
             className={`tab ${view === "programs" ? "active" : ""}`}
@@ -298,6 +310,7 @@ function Shell({ me, authFetch, logout }) {
         <nav className="mobile-menu">
           {[
             ["live", "🔴 Live"],
+            ["redflags", `🚩 Red Flags${redflags.total ? ` (${redflags.total})` : ""}`],
             ["programs", "📌 Programs"],
             ["feedback", "🎭 Feedback"],
             ["messages", "💬 Messages"],
@@ -375,6 +388,7 @@ function Shell({ me, authFetch, logout }) {
           )}
         </div>
       )}
+      {view === "redflags" && <RedFlags data={redflags} />}
       {view === "programs" && (
         <Programs admins={admins} authFetch={authFetch} />
       )}
@@ -509,6 +523,49 @@ function PersonPanel({ person, me, authFetch, onClose }) {
         </p>
       )}
     </section>
+  );
+}
+
+// ---- Red flags -----------------------------------------------------------------
+
+function RedFlags({ data }) {
+  return (
+    <main className="hub">
+      <div className="rf-banner">
+        🚩 SLA breaches, checked live from PK every minute.
+        {data.generated_at && (
+          <span className="muted"> Last checked {timeAgo(data.generated_at)} ago.</span>
+        )}
+      </div>
+      {data.rules.map((rule) => (
+        <section key={rule.key} className="rf-section">
+          <div className="rf-section-head">
+            <strong>{rule.label}</strong>
+            <span className="rf-count">{rule.count}</span>
+          </div>
+          <div className="muted rf-note">
+            Orders from the last {rule.window_days} days, pending beyond {rule.sla_days}{" "}
+            days.
+          </div>
+          {rule.flags.map((f) => (
+            <article key={`${rule.key}-${f.ref}`} className="card rf-card">
+              <div className="rf-row">
+                <strong className="rf-entity">{f.entity}</strong>
+                <span className="chip chip-other">{f.state}</span>
+                <span className="rf-over">{f.days_overdue}d overdue</span>
+              </div>
+              <div className="rf-sub muted">
+                {rule.ref_label} #{f.ref} · pending since {formatWhen(f.since)}
+              </div>
+            </article>
+          ))}
+          {rule.count === 0 && <div className="empty">No breaches — all clear ✅</div>}
+        </section>
+      ))}
+      {data.rules.length === 0 && (
+        <div className="empty big">Checking for SLA breaches…</div>
+      )}
+    </main>
   );
 }
 

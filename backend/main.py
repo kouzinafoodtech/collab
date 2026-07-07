@@ -1370,6 +1370,123 @@ def send_message(body: MessageIn, admin: dict = Depends(current_admin)):
         return _serialize_message(row)
 
 
+# ---- Red flags: SLA breaches computed live from portal tables --------------------
+# No extra table needed — a red flag is a STATE (still pending past its SLA),
+# read straight from pkdb. Add a rule by appending an entry here.
+
+REDFLAG_RULES = [
+    {
+        "key": "coco_grn",
+        "label": "CoCo orders — GRN overdue (SLA: 3 days from approval)",
+        "ref_label": "CoCo order",
+        "sla_days": 3,
+        "window_days": 45,
+        "sql": (
+            "SELECT io.id AS ref, k.name AS entity, io.status AS state, "
+            "COALESCE(io.invoice_generated_at, io.updated_at, io.created_at) AS since "
+            "FROM pkdb.internal_orders io "
+            "LEFT JOIN pkdb.coco_kitchens k ON k.id = io.kitchen_id "
+            "WHERE io.status IN ('approved','dispatched','invoiced','delivered') "
+            "AND io.grn_completed_at IS NULL "
+            "AND COALESCE(io.invoice_generated_at, io.updated_at, io.created_at) < :cutoff "
+            "AND io.created_at >= :window ORDER BY since ASC LIMIT 100"
+        ),
+    },
+    {
+        "key": "partner_grn",
+        "label": "Partner orders — GRN overdue (SLA: 2 days from completion)",
+        "ref_label": "Partner order",
+        "sla_days": 2,
+        "window_days": 30,
+        "sql": (
+            "SELECT o.id AS ref, p.name AS entity, o.status AS state, "
+            "o.updated_at AS since "
+            "FROM pkdb.orders o LEFT JOIN pkdb.partners p ON p.id = o.partner_id "
+            "WHERE o.status IN ('completed','partial_completed') "
+            "AND o.grn_completed_at IS NULL "
+            "AND o.updated_at < :cutoff AND o.created_at >= :window "
+            "ORDER BY since ASC LIMIT 100"
+        ),
+    },
+]
+
+_redflag_cache: dict = {"at": None, "data": None}
+
+
+@api.get("/redflags")
+def redflags(admin: dict = Depends(current_admin)):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if (
+        _redflag_cache["at"]
+        and (now - _redflag_cache["at"]).total_seconds() < 60
+        and _redflag_cache["data"]
+    ):
+        return _redflag_cache["data"]
+
+    rules_out, total = [], 0
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            for rule in REDFLAG_RULES:
+                try:
+                    rows = conn.execute(
+                        text(rule["sql"]),
+                        {
+                            "cutoff": now - timedelta(days=rule["sla_days"]),
+                            "window": now - timedelta(days=rule["window_days"]),
+                        },
+                    ).mappings().all()
+                except Exception:
+                    rows = []  # a broken rule must not take the tab down
+                flags = [
+                    {
+                        "ref": r["ref"],
+                        "entity": r["entity"] or "—",
+                        "state": r["state"],
+                        "since": _iso_utc(r["since"]),
+                        "days_overdue": max(
+                            1, (now - r["since"]).days - rule["sla_days"]
+                        )
+                        if r["since"]
+                        else 1,
+                    }
+                    for r in rows
+                ]
+                total += len(flags)
+                rules_out.append(
+                    {
+                        "key": rule["key"],
+                        "label": rule["label"],
+                        "ref_label": rule["ref_label"],
+                        "sla_days": rule["sla_days"],
+                        "window_days": rule["window_days"],
+                        "count": len(flags),
+                        "flags": flags,
+                    }
+                )
+    else:  # local dev: demo flags so the UI is testable
+        rules_out = [
+            {
+                "key": "coco_grn",
+                "label": "CoCo orders — GRN overdue (SLA: 3 days from approval)",
+                "ref_label": "CoCo order",
+                "sla_days": 3,
+                "window_days": 45,
+                "count": 2,
+                "flags": [
+                    {"ref": 1777, "entity": "KLP HSR", "state": "invoiced",
+                     "since": _iso_utc(now - timedelta(days=9)), "days_overdue": 6},
+                    {"ref": 1988, "entity": "E-CITY", "state": "approved",
+                     "since": _iso_utc(now - timedelta(days=5)), "days_overdue": 2},
+                ],
+            }
+        ]
+        total = 2
+    data = {"total": total, "rules": rules_out, "generated_at": _iso_utc(now)}
+    _redflag_cache["at"] = now
+    _redflag_cache["data"] = data
+    return data
+
+
 # ---- Programs -------------------------------------------------------------------
 
 class ProgramIn(BaseModel):
