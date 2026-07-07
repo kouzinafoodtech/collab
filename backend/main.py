@@ -468,6 +468,8 @@ def _seed_dev_events(db):
         ("Flame & Feast", "stock_deducted", "stock deducted · Coated Paneer (27 → 25)"),
         ("Flame & Feast", "stock_deducted", "stock deducted · Butter Chicken Gravy (206 → 196)"),
         ("Flame & Feast", "stock_deducted", "stock deducted · Egg Corn Fried Rice (743 → 733)"),
+        # Different action, same person, same window — exercises mixed grouping.
+        ("Flame & Feast", "order_status_changed", "order status changed order #38010"),
     ]
     details = json.dumps(
         {"item_name": "LACCHA PARATHA MAIDA", "active": {"from": True, "to": False}}
@@ -1047,7 +1049,9 @@ def get_feed(
         overflow = len(rows) > raw_fetch
         rows = rows[:raw_fetch]
 
-        # Collapse consecutive same-actor same-action events into groups.
+        # Collapse consecutive events by the same person (any actions) within
+        # GROUP_WINDOW into one card — a burst of PO generate/push pairs reads
+        # as a single update.
         groups: list[dict] = []
         consumed = 0
         for r in rows:
@@ -1057,10 +1061,10 @@ def get_feed(
                 g is not None
                 and g["portal"] == r.portal
                 and g["actor"] == r.actor
-                and g["action"] == r.action
                 and (g["anchor"] - r_ts) <= GROUP_WINDOW
             ):
                 g["members"].append(r)
+                g["actions"].add(r.action)
                 consumed += 1
                 continue
             if len(groups) == limit:
@@ -1069,9 +1073,9 @@ def get_feed(
                 {
                     "portal": r.portal,
                     "actor": r.actor,
-                    "action": r.action,
                     "anchor": r_ts,
                     "members": [r],
+                    "actions": {r.action},
                 }
             )
             consumed += 1
@@ -1113,6 +1117,8 @@ def get_feed(
                 "portal": rep.portal,
                 "actor": rep.actor,
                 "action": rep.action,
+                "actions": sorted(g["actions"])[:6],
+                "uniform": len(g["actions"]) == 1,
                 "summary": _render_summary(rep.action, rep.summary, rep.details),
                 "happened_at": _iso_utc(rep.happened_at),
                 "count": len(g["members"]),

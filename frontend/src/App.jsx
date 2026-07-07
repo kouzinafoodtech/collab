@@ -1004,8 +1004,13 @@ function Feed({ authFetch, actor, onActor }) {
           <span className="refresh-icon">⟳</span> Refresh
         </button>
       </div>
-      {events.map((ev) => (
-        <article key={ev.id} className={`event card kind-${actionKind(ev.action)}`}>
+      {events.map((ev) => {
+        const kind =
+          (ev.actions || [ev.action]).map(actionKind).find((k) => k === "alert") ||
+          actionKind(ev.action);
+        const uniform = ev.uniform !== false;
+        return (
+        <article key={ev.id} className={`event card kind-${kind}`}>
           <div className="event-row">
             <span className="avatar" style={{ background: actorColor(ev.actor) }}>
               {initials(ev.actor)}
@@ -1018,9 +1023,15 @@ function Feed({ authFetch, actor, onActor }) {
                 <span className={`badge badge-${ev.portal.toLowerCase()}`}>
                   {ev.portal}
                 </span>
-                <span className={`chip chip-${actionKind(ev.action)}`}>
-                  {ev.action.replace(/_/g, " ")}
-                </span>
+                {uniform ? (
+                  <span className={`chip chip-${actionKind(ev.action)}`}>
+                    {ev.action.replace(/_/g, " ")}
+                  </span>
+                ) : (
+                  <span className={`chip chip-${kind}`}>
+                    {ev.actions.length} actions
+                  </span>
+                )}
                 {ev.count > 1 && <span className="count-pill">×{ev.count}</span>}
                 <span
                   className="event-time"
@@ -1038,7 +1049,7 @@ function Feed({ authFetch, actor, onActor }) {
                   >
                     {expanded === ev.id
                       ? "hide"
-                      : `show ${ev.count - 1} more like this`}
+                      : `show ${ev.count - 1} more`}
                   </button>
                   {expanded === ev.id && (
                     <ul className="extras">
@@ -1080,7 +1091,8 @@ function Feed({ authFetch, actor, onActor }) {
             </div>
           </div>
         </article>
-      ))}
+        );
+      })}
       {events.length === 0 && (
         <div className="empty big">
           {loaded
