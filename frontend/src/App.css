@@ -1098,6 +1098,9 @@ button.link {
 .rf-group {
   padding: 0;
   overflow: hidden;
+  /* In the flex-column .hub, overflow:hidden would let this shrink to 0 and
+     clip its items instead of letting the hub scroll — pin its size. */
+  flex-shrink: 0;
 }
 
 .rf-group-head-row {
