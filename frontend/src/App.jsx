@@ -410,7 +410,12 @@ function Shell({ me, authFetch, logout }) {
       )}
       {view === "feedback" && <Feedback authFetch={authFetch} />}
       {view === "messages" && (
-        <MessagesHub me={me} admins={admins} authFetch={authFetch} />
+        <MessagesHub
+          me={me}
+          admins={admins}
+          authFetch={authFetch}
+          onActor={openActor}
+        />
       )}
       {view === "dash" && <Dashboard authFetch={authFetch} />}
     </div>
@@ -1494,7 +1499,7 @@ function Wall({ email, name, authFetch, readOnly = false }) {
 
 // ---- Messages hub ---------------------------------------------------------------
 
-function MessagesHub({ me, admins, authFetch }) {
+function MessagesHub({ me, admins, authFetch, onActor }) {
   const [sub, setSub] = useState("all"); // all | private
   const [msgs, setMsgs] = useState([]);
   const [recipient, setRecipient] = useState("");
@@ -1503,6 +1508,9 @@ function MessagesHub({ me, admins, authFetch }) {
   const [replyTo, setReplyTo] = useState(null);
   const [replyBody, setReplyBody] = useState("");
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [mineOnly, setMineOnly] = useState(false);
+  const [openThreads, setOpenThreads] = useState({}); // rootId -> bool
 
   const load = useCallback(() => {
     authFetch(sub === "all" ? "/messages/public" : "/messages/private")
@@ -1577,12 +1585,39 @@ function MessagesHub({ me, admins, authFetch }) {
     }
   }
 
-  const roots = msgs.filter((m) => !m.parent_id);
   const kids = {};
   for (const m of msgs) {
     if (m.parent_id) (kids[m.parent_id] ||= []).push(m);
   }
   Object.values(kids).forEach((list) => list.sort((a, b) => a.id - b.id));
+
+  const q = query.trim().toLowerCase();
+  const involvesMe = (m) => m.sender === me.email || m.recipient === me.email;
+  const matchesQuery = (m) =>
+    !q ||
+    (m.sender_name || "").toLowerCase().includes(q) ||
+    (m.recipient_name || "").toLowerCase().includes(q) ||
+    (m.body || "").toLowerCase().includes(q);
+
+  const roots = msgs
+    .filter((m) => !m.parent_id)
+    .filter((m) => {
+      const thread = [m, ...(kids[m.id] || [])];
+      if (mineOnly && !thread.some(involvesMe)) return false;
+      if (q && !thread.some(matchesQuery)) return false;
+      return true;
+    });
+
+  const NameLink = ({ name }) => (
+    <button
+      className="msg-name-link"
+      style={{ color: actorColor(name) }}
+      onClick={() => onActor(name)}
+      title={`Open ${name}`}
+    >
+      {name}
+    </button>
+  );
 
   return (
     <main className="hub">
@@ -1598,6 +1633,21 @@ function MessagesHub({ me, admins, authFetch }) {
           onClick={() => setSub("private")}
         >
           🔒 Private
+        </button>
+      </div>
+
+      <div className="msg-filter">
+        <input
+          className="grow"
+          placeholder="Search messages or people…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button
+          className={`chip-toggle ${mineOnly ? "on" : ""}`}
+          onClick={() => setMineOnly(!mineOnly)}
+        >
+          Involving me
         </button>
       </div>
 
@@ -1635,78 +1685,93 @@ function MessagesHub({ me, admins, authFetch }) {
       {error && <p className="error">{error}</p>}
 
       <div className="thread-list">
-        {roots.map((m) => (
-          <div key={m.id} className="msg-card card">
-            <div
-              className="wall-msg root"
-              style={{
-                background: actorTint(m.sender_name),
-                borderLeftColor: actorColor(m.sender_name),
-              }}
-            >
-              <span className="wall-sender" style={{ color: actorColor(m.sender_name) }}>
-                {m.sender_name}
-              </span>
-              <span className="to-chip">→ {m.recipient_name}</span>
-              {m.is_private && <span className="lock">🔒</span>}
-              <span className="wall-body">{m.body}</span>
-              <span className="wall-time">{timeAgo(m.created_at)}</span>
-              <button
-                className={`react xs ${m.liked_by_me ? "liked" : ""}`}
-                onClick={() => toggleLike(m.id)}
-              >
-                {m.liked_by_me ? "♥" : "♡"} {m.like_count || ""}
-              </button>
-            </div>
-            {(kids[m.id] || []).map((c) => (
+        {roots.map((m) => {
+          const replies = kids[m.id] || [];
+          const showReplies = openThreads[m.id] || Boolean(q);
+          return (
+            <div key={m.id} className="msg-card card">
               <div
-                key={c.id}
-                className="wall-msg reply"
-                style={{ borderLeftColor: actorColor(c.sender_name) }}
-              >
-                <span
-                  className="wall-sender"
-                  style={{ color: actorColor(c.sender_name) }}
-                >
-                  {c.sender_name}
-                </span>
-                <span className="wall-body">{c.body}</span>
-                <span className="wall-time">{timeAgo(c.created_at)}</span>
-                <button
-                  className={`react xs ${c.liked_by_me ? "liked" : ""}`}
-                  onClick={() => toggleLike(c.id)}
-                >
-                  {c.liked_by_me ? "♥" : "♡"} {c.like_count || ""}
-                </button>
-              </div>
-            ))}
-            {replyTo === m.id ? (
-              <form
-                className="reply-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  sendReply(m.id);
+                className="wall-msg root"
+                style={{
+                  background: actorTint(m.sender_name),
+                  borderLeftColor: actorColor(m.sender_name),
                 }}
               >
-                <input
-                  className="grow"
-                  autoFocus
-                  placeholder="Reply…"
-                  value={replyBody}
-                  onChange={(e) => setReplyBody(e.target.value)}
-                />
-                <button type="submit">Reply</button>
-              </form>
-            ) : (
-              <button className="link reply-link" onClick={() => setReplyTo(m.id)}>
-                ↳ reply
-              </button>
-            )}
-          </div>
-        ))}
+                <NameLink name={m.sender_name} />
+                <span className="to-chip">
+                  → <NameLink name={m.recipient_name} />
+                </span>
+                {m.is_private && <span className="lock">🔒</span>}
+                <span className="wall-body">{m.body}</span>
+                <span className="wall-time">{timeAgo(m.created_at)}</span>
+                <button
+                  className={`react xs ${m.liked_by_me ? "liked" : ""}`}
+                  onClick={() => toggleLike(m.id)}
+                >
+                  {m.liked_by_me ? "♥" : "♡"} {m.like_count || ""}
+                </button>
+              </div>
+
+              {replies.length > 0 && (
+                <button
+                  className="link thread-toggle"
+                  onClick={() =>
+                    setOpenThreads((o) => ({ ...o, [m.id]: !showReplies }))
+                  }
+                >
+                  💬 {replies.length} {replies.length > 1 ? "replies" : "reply"}{" "}
+                  {showReplies ? "▲" : "▼"}
+                </button>
+              )}
+              {showReplies &&
+                replies.map((c) => (
+                  <div
+                    key={c.id}
+                    className="wall-msg reply"
+                    style={{ borderLeftColor: actorColor(c.sender_name) }}
+                  >
+                    <NameLink name={c.sender_name} />
+                    <span className="wall-body">{c.body}</span>
+                    <span className="wall-time">{timeAgo(c.created_at)}</span>
+                    <button
+                      className={`react xs ${c.liked_by_me ? "liked" : ""}`}
+                      onClick={() => toggleLike(c.id)}
+                    >
+                      {c.liked_by_me ? "♥" : "♡"} {c.like_count || ""}
+                    </button>
+                  </div>
+                ))}
+
+              {replyTo === m.id ? (
+                <form
+                  className="reply-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    sendReply(m.id);
+                  }}
+                >
+                  <input
+                    className="grow"
+                    autoFocus
+                    placeholder="Reply…"
+                    value={replyBody}
+                    onChange={(e) => setReplyBody(e.target.value)}
+                  />
+                  <button type="submit">Reply</button>
+                </form>
+              ) : (
+                <button className="link reply-link" onClick={() => setReplyTo(m.id)}>
+                  ↳ reply
+                </button>
+              )}
+            </div>
+          );
+        })}
         {roots.length === 0 && (
           <div className="empty big">
-            {sub === "private"
+            {q || mineOnly
+              ? "No messages match."
+              : sub === "private"
               ? "No private messages yet."
               : "No messages yet — start one above."}
           </div>

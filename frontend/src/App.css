@@ -373,6 +373,56 @@ button.link {
   width: auto;
 }
 
+.msg-filter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.chip-toggle {
+  white-space: nowrap;
+  background: #fff;
+  color: #475569;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.chip-toggle.on {
+  background: #eef2ff;
+  color: var(--brand);
+  border-color: #d7defc;
+}
+
+.chip-toggle:hover {
+  filter: none;
+  background: #f4f4ff;
+}
+
+.msg-name-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-weight: 700;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.msg-name-link:hover {
+  text-decoration: underline;
+  filter: none;
+}
+
+.thread-toggle {
+  align-self: flex-start;
+  text-decoration: none !important;
+  font-weight: 600;
+  color: #475569 !important;
+  font-size: 0.82rem;
+}
+
 .thread-list {
   display: flex;
   flex-direction: column;
