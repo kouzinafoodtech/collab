@@ -792,6 +792,17 @@ for sub in (app, api):
     )
 
 
+@app.middleware("http")
+async def _no_cache_html(request, call_next):
+    """Never let the SPA shell (index.html) be cached — hashed JS/CSS assets
+    stay cacheable, but a fresh deploy's index.html must always be re-fetched so
+    clients pick up the new asset hashes instead of a stale build."""
+    resp = await call_next(request)
+    if resp.headers.get("content-type", "").startswith("text/html"):
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
 @api.get("/health")
 def health():
     return {"status": "ok"}
