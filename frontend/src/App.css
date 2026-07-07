@@ -547,6 +547,70 @@ button.link {
   margin-top: 6px;
 }
 
+.adoption-tiles {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 180px));
+  margin-bottom: 14px;
+}
+
+.adoption-tiles .tile {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.usage-table th {
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f3f9;
+  white-space: nowrap;
+}
+
+.usage-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.never-block {
+  margin-top: 16px;
+}
+
+.never-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.never-chip {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+}
+
 /* ---- Person panel + wall ---- */
 .person-panel {
   margin: 16px 16px 0;

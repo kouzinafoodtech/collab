@@ -795,7 +795,82 @@ function Dashboard({ authFetch }) {
         <DayBars title="PK logins per day · 14d" data={data.pk_usage} />
         <DayBars title="KFC logins per day · 14d" data={data.kfc_usage} />
       </div>
+      {data.adoption && <Adoption adoption={data.adoption} />}
     </main>
+  );
+}
+
+function Adoption({ adoption }) {
+  return (
+    <div className="card chart-card">
+      <div className="chart-title">Kouzina Live adoption · last 30 days</div>
+      <div className="tiles adoption-tiles">
+        <div className="tile">
+          <div className="tile-value">{adoption.logins_7d}</div>
+          <div className="tile-label">Sign-ins · 7d</div>
+        </div>
+        <div className="tile">
+          <div className="tile-value">{adoption.users_7d}</div>
+          <div className="tile-label">People · 7d</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table className="usage-table">
+          <thead>
+            <tr>
+              <th>Person</th>
+              <th>Sign-ins</th>
+              <th>Messages</th>
+              <th>Likes</th>
+              <th>Comments</th>
+              <th>Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {adoption.users.map((u) => (
+              <tr key={u.email}>
+                <td className="usage-name">
+                  <span
+                    className="avatar sm"
+                    style={{ background: actorColor(u.name) }}
+                  >
+                    {initials(u.name)}
+                  </span>
+                  {u.name}
+                </td>
+                <td>{u.logins}</td>
+                <td>{u.messages}</td>
+                <td>{u.likes}</td>
+                <td>{u.comments}</td>
+                <td className="muted">
+                  {u.last_login ? formatWhen(u.last_login) : "—"}
+                </td>
+              </tr>
+            ))}
+            {adoption.users.length === 0 && (
+              <tr>
+                <td colSpan="6" className="muted">
+                  Sign-in tracking starts with this release — data appears as
+                  people log in.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {adoption.never.length > 0 && (
+        <div className="never-block">
+          <div className="chart-title">Not signed in yet · give them a nudge 👇</div>
+          <div className="never-list">
+            {adoption.never.map((n) => (
+              <span key={n} className="never-chip">
+                {n}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

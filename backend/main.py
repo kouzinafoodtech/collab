@@ -137,6 +137,14 @@ class EventCommentRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class LiveLoginRow(Base):
+    __tablename__ = "live_logins"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False, index=True)
+    name = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class IngestStateRow(Base):
     __tablename__ = "ingest_state"
     source = Column(String(64), primary_key=True)
@@ -608,6 +616,12 @@ def login(body: LoginIn):
         or not _verify_password(body.password, admin["password_hash"])
     ):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    try:  # usage tracking for the adoption dashboard; never blocks login
+        with SessionLocal() as db:
+            db.add(LiveLoginRow(email=admin["email"], name=admin.get("name")))
+            db.commit()
+    except Exception:
+        pass
     return {
         "token": make_token(admin["email"], admin.get("name")),
         "email": admin["email"],
@@ -877,12 +891,82 @@ def dashboard(admin: dict = Depends(current_admin)):
         except Exception:
             return []
 
+    # ---- Kouzina Live adoption: who signs in, how often, what they do ------
+    d30 = now - timedelta(days=30)
+    with SessionLocal() as db:
+        adoption = {
+            "logins_7d": db.query(LiveLoginRow)
+            .filter(LiveLoginRow.created_at >= d7)
+            .count(),
+            "users_7d": db.query(LiveLoginRow.email)
+            .filter(LiveLoginRow.created_at >= d7)
+            .distinct()
+            .count(),
+        }
+        users: dict[str, dict] = {}
+
+        def _bucket(email):
+            return users.setdefault(
+                email,
+                {
+                    "email": email,
+                    "logins": 0,
+                    "last_login": None,
+                    "messages": 0,
+                    "likes": 0,
+                    "comments": 0,
+                },
+            )
+
+        for email, cnt, last in (
+            db.query(LiveLoginRow.email, func.count(), func.max(LiveLoginRow.created_at))
+            .filter(LiveLoginRow.created_at >= d30)
+            .group_by(LiveLoginRow.email)
+        ):
+            u = _bucket(email)
+            u["logins"] = cnt
+            u["last_login"] = _iso_utc(last)
+        for email, cnt in (
+            db.query(MessageRow.sender, func.count())
+            .filter(MessageRow.created_at >= d30)
+            .group_by(MessageRow.sender)
+        ):
+            _bucket(email)["messages"] = cnt
+        for email, cnt in (
+            db.query(EventLikeRow.admin_email, func.count())
+            .filter(EventLikeRow.created_at >= d30)
+            .group_by(EventLikeRow.admin_email)
+        ):
+            _bucket(email)["likes"] = cnt
+        for email, cnt in (
+            db.query(EventCommentRow.admin_email, func.count())
+            .filter(EventCommentRow.created_at >= d30)
+            .group_by(EventCommentRow.admin_email)
+        ):
+            _bucket(email)["comments"] = cnt
+
+    names = resolve_names(set(users.keys()))
+    for email, u in users.items():
+        u["name"] = names.get(email) or email.split("@")[0]
+    adoption["users"] = sorted(
+        users.values(),
+        key=lambda u: (u["logins"], u["messages"] + u["likes"] + u["comments"]),
+        reverse=True,
+    )
+    active_emails = {e for e, u in users.items() if u["logins"] > 0}
+    adoption["never"] = sorted(
+        a["name"] or a["email"]
+        for a in list_active_admins()
+        if a["email"] not in active_emails
+    )
+
     return {
         "totals": totals,
         "by_person": by_person,
         "feed_by_day": feed_by_day,
         "pk_usage": _logins_per_day("pkdb.admin_audit_log"),
         "kfc_usage": _logins_per_day("wodb.audit_log"),
+        "adoption": adoption,
     }
 
 
