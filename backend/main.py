@@ -182,6 +182,13 @@ JWT_ALG = "HS256"
 TOKEN_TTL = timedelta(hours=12)
 SUPERADMIN_EMAIL = os.environ.get("SUPERADMIN_EMAIL", "admin@kftpl.com")
 
+# System/bot accounts hidden from people lists and not messageable.
+EXCLUDED_ADMIN_EMAILS = {"cocoadmin@kftpl.com", "swiggy-review@kftpl.com"}
+
+
+def _excluded(email: Optional[str]) -> bool:
+    return (email or "").lower() in EXCLUDED_ADMIN_EMAILS
+
 
 def resolve_names(emails: set[str]) -> dict[str, str]:
     """email -> display name, for the emails that belong to admins."""
@@ -238,7 +245,7 @@ def list_active_admins() -> list[dict]:
             rows = conn.execute(
                 text("SELECT name, email FROM pkdb.admins WHERE active = 1 ORDER BY name")
             ).mappings().all()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in rows if not _excluded(r["email"])]
     return [
         {"name": "Dev Admin", "email": os.environ.get("DEV_ADMIN_EMAIL", "dev@local")},
         {"name": "Alice Admin", "email": "alice@local"},
@@ -246,6 +253,8 @@ def list_active_admins() -> list[dict]:
 
 
 def is_active_admin(email: str) -> bool:
+    if _excluded(email):
+        return False
     if IS_MYSQL:
         with engine.connect() as conn:
             return (
@@ -648,7 +657,8 @@ def leaderboard(admin: dict = Depends(current_admin)):
         else:
             by_name = {a["name"]: a["email"] for a in list_active_admins()}
         for e in entries:
-            e["email"] = by_name.get(e["actor"])
+            em = by_name.get(e["actor"])
+            e["email"] = None if _excluded(em) else em
     return entries
 
 
@@ -700,6 +710,8 @@ def person(actor: str, admin: dict = Depends(current_admin)):
         email = next(
             (a["email"] for a in list_active_admins() if a["name"] == actor), None
         )
+    if _excluded(email):
+        email = None
     return {"actor": actor, "count": count, "email": email}
 
 

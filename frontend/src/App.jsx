@@ -245,7 +245,7 @@ function Shell({ me, authFetch, logout }) {
           <div className="feed-col">
             {person && (
               <PersonPanel
-                key={person.actor}
+                key={`panel-${person.actor}`}
                 person={person}
                 me={me}
                 authFetch={authFetch}
@@ -253,7 +253,7 @@ function Shell({ me, authFetch, logout }) {
               />
             )}
             <Feed
-              key={person ? person.actor : "__all__"}
+              key={person ? `feed-${person.actor}` : "feed-all"}
               authFetch={authFetch}
               actor={person ? person.actor : null}
               onActor={openActor}
