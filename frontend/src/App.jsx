@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 const API = "/api";
+const SUPERADMIN = "admin@kftpl.com";
 
 function formatWhen(iso) {
-  // Absolute local date + time, e.g. "10:49 AM" today or "6 Jul, 10:49 AM".
   const d = new Date(iso);
   const now = new Date();
   const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
@@ -20,17 +20,14 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
-function actorColor(name) {
+function hue(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
-  return `hsl(${h}, 62%, 46%)`;
+  return h;
 }
 
-function actorTint(name) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
-  return `hsl(${h}, 70%, 95%)`;
-}
+const actorColor = (n) => `hsl(${hue(n)}, 62%, 46%)`;
+const actorTint = (n) => `hsl(${hue(n)}, 70%, 95%)`;
 
 function initials(name) {
   const parts = name.trim().split(/\s+/);
@@ -39,7 +36,7 @@ function initials(name) {
 
 function actionKind(action) {
   if (/stock|inventory|quantity|csv/.test(action)) return "stock";
-  if (/order|grn|dispatch|deliver/.test(action)) return "order";
+  if (/order|grn|dispatch|deliver|load/.test(action)) return "order";
   if (/expense|bill|invoice|paid|payment|payout|credit/.test(action)) return "money";
   if (/admin|user|permission|role/.test(action)) return "people";
   if (/price/.test(action)) return "price";
@@ -90,9 +87,7 @@ export default function App() {
     setMe(null);
   }
 
-  if (!token || !me) {
-    return <Login onLoggedIn={onLoggedIn} />;
-  }
+  if (!token || !me) return <Login onLoggedIn={onLoggedIn} />;
   return <Shell me={me} authFetch={authFetch} logout={logout} />;
 }
 
@@ -162,8 +157,11 @@ const PORTALS = [
 ];
 
 function Shell({ me, authFetch, logout }) {
+  const isSuper = (me.email || "").toLowerCase() === SUPERADMIN;
+  const [view, setView] = useState("live"); // live | messages | dash
   const [person, setPerson] = useState(null); // {actor, email, count}
   const [board, setBoard] = useState([]);
+  const [admins, setAdmins] = useState([]);
 
   const loadBoard = useCallback(() => {
     authFetch("/leaderboard")
@@ -175,9 +173,28 @@ function Shell({ me, authFetch, logout }) {
 
   useEffect(() => {
     loadBoard();
+    authFetch("/admins")
+      .then((r) => r.json())
+      .then(setAdmins)
+      .catch(() => {});
     const t = setInterval(loadBoard, 60000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadBoard]);
+
+  function openPerson(p) {
+    setPerson(p);
+    setView("live");
+  }
+
+  async function openActor(actor) {
+    try {
+      const res = await authFetch(`/person/${encodeURIComponent(actor)}`);
+      openPerson(await res.json());
+    } catch {
+      openPerson({ actor, email: null, count: 0 });
+    }
+  }
 
   return (
     <div className="shell">
@@ -186,6 +203,28 @@ function Shell({ me, authFetch, logout }) {
           <span className="live-dot" />
           Kouzina <span className="brand-live">Live</span>
         </div>
+        <nav className="tabs">
+          <button
+            className={`tab ${view === "live" ? "active" : ""}`}
+            onClick={() => setView("live")}
+          >
+            Live
+          </button>
+          <button
+            className={`tab ${view === "messages" ? "active" : ""}`}
+            onClick={() => setView("messages")}
+          >
+            Messages
+          </button>
+          {isSuper && (
+            <button
+              className={`tab ${view === "dash" ? "active" : ""}`}
+              onClick={() => setView("dash")}
+            >
+              Dashboard
+            </button>
+          )}
+        </nav>
         <nav className="portal-links">
           {PORTALS.map((p) => (
             <a key={p.label} href={p.href} target="_blank" rel="noreferrer">
@@ -201,53 +240,119 @@ function Shell({ me, authFetch, logout }) {
         </div>
       </header>
 
-      <div className="layout">
-        <div className="feed-col">
-          {person && (
-            <PersonPanel
-              key={person.actor}
-              person={person}
-              me={me}
+      {view === "live" && (
+        <div className="layout">
+          <div className="feed-col">
+            {person && (
+              <PersonPanel
+                key={person.actor}
+                person={person}
+                me={me}
+                authFetch={authFetch}
+                onClose={() => setPerson(null)}
+              />
+            )}
+            <Feed
+              key={person ? person.actor : "__all__"}
               authFetch={authFetch}
-              onClose={() => setPerson(null)}
+              actor={person ? person.actor : null}
+              onActor={openActor}
             />
-          )}
-          <Feed
-            key={person ? person.actor : "__all__"}
-            authFetch={authFetch}
-            actor={person ? person.actor : null}
+          </div>
+          <Sidebar
+            board={board}
+            admins={admins}
+            selected={person?.actor}
+            onSelect={(p) => openPerson(p)}
+            onClear={() => setPerson(null)}
           />
         </div>
-        <Leaderboard board={board} selected={person?.actor} onSelect={setPerson} />
-      </div>
+      )}
+      {view === "messages" && (
+        <MessagesHub me={me} admins={admins} authFetch={authFetch} />
+      )}
+      {view === "dash" && <Dashboard authFetch={authFetch} />}
     </div>
   );
 }
 
-function Leaderboard({ board, selected, onSelect }) {
+// ---- Sidebar: leadership + all admins ----------------------------------------
+
+function PersonRow({ entry, selected, onClick, rank }) {
+  return (
+    <button className={`lb-item ${selected ? "active" : ""}`} onClick={onClick}>
+      {rank != null && <span className="lb-rank">{rank}</span>}
+      <span className="avatar sm" style={{ background: actorColor(entry.actor) }}>
+        {initials(entry.actor)}
+      </span>
+      <span className="lb-name">{entry.actor}</span>
+      {entry.count > 0 && <span className="lb-count">{entry.count}</span>}
+    </button>
+  );
+}
+
+function Sidebar({ board, admins, selected, onSelect, onClear }) {
+  const [moreLead, setMoreLead] = useState(false);
+  const [moreAdmins, setMoreAdmins] = useState(false);
+
+  const counts = Object.fromEntries(board.map((b) => [b.actor, b.count]));
+  const adminEntries = admins
+    .map((a) => ({
+      actor: a.name || a.email,
+      email: a.email,
+      count: counts[a.name] || 0,
+    }))
+    .sort((x, y) => y.count - x.count || x.actor.localeCompare(y.actor));
+
+  const lead = board.slice(0, moreLead ? 15 : 5);
+  const shownAdmins = adminEntries.slice(0, moreAdmins ? adminEntries.length : 10);
+
   return (
     <aside className="leaderboard">
-      <div className="lb-title">Most active · 12h</div>
-      <div className="lb-list">
-        {board.map((p, i) => (
-          <button
-            key={p.actor}
-            className={`lb-item ${selected === p.actor ? "active" : ""}`}
-            onClick={() => onSelect(selected === p.actor ? null : p)}
-          >
-            <span className="lb-rank">{i + 1}</span>
-            <span className="avatar sm" style={{ background: actorColor(p.actor) }}>
-              {initials(p.actor)}
-            </span>
-            <span className="lb-name">{p.actor}</span>
-            <span className="lb-count">{p.count}</span>
+      <div className="lb-section">
+        <div className="lb-title">Leadership · 12h</div>
+        <div className="lb-list">
+          {lead.map((p, i) => (
+            <PersonRow
+              key={p.actor}
+              entry={p}
+              rank={i + 1}
+              selected={selected === p.actor}
+              onClick={() => (selected === p.actor ? onClear() : onSelect(p))}
+            />
+          ))}
+          {board.length === 0 && <div className="empty">Quiet last 12 hours.</div>}
+        </div>
+        {board.length > 5 && (
+          <button className="link lb-more" onClick={() => setMoreLead(!moreLead)}>
+            {moreLead ? "show less" : `show ${Math.min(board.length, 15) - 5} more`}
           </button>
-        ))}
-        {board.length === 0 && <div className="empty">Quiet last 12 hours.</div>}
+        )}
+      </div>
+
+      <div className="lb-section">
+        <div className="lb-title">Admins</div>
+        <div className="lb-list">
+          {shownAdmins.map((p) => (
+            <PersonRow
+              key={p.email}
+              entry={p}
+              selected={selected === p.actor}
+              onClick={() => (selected === p.actor ? onClear() : onSelect(p))}
+            />
+          ))}
+        </div>
+        {adminEntries.length > 10 && (
+          <button className="link lb-more" onClick={() => setMoreAdmins(!moreAdmins)}>
+            {moreAdmins ? "show less" : `show all ${adminEntries.length}`}
+          </button>
+        )}
       </div>
     </aside>
   );
 }
+
+// ---- Person panel + wall -------------------------------------------------------
 
 function PersonPanel({ person, me, authFetch, onClose }) {
   return (
@@ -259,7 +364,7 @@ function PersonPanel({ person, me, authFetch, onClose }) {
         <div className="person-id">
           <strong>{person.actor}</strong>
           <span className="person-sub">
-            {person.count} actions in the last 12h
+            {person.count || 0} actions in the last 12h
             {person.email ? ` · ${person.email}` : ""}
           </span>
         </div>
@@ -304,9 +409,9 @@ function Wall({ email, name, authFetch, readOnly = false }) {
     setError("");
     if (!body.trim()) return;
     try {
-      const res = await authFetch(`/wall/${encodeURIComponent(email)}`, {
+      const res = await authFetch(`/messages/send`, {
         method: "POST",
-        body: JSON.stringify({ body: body.trim() }),
+        body: JSON.stringify({ recipient: email, body: body.trim(), private: false }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -359,21 +464,305 @@ function Wall({ email, name, authFetch, readOnly = false }) {
   );
 }
 
+// ---- Messages hub ---------------------------------------------------------------
+
+function MessagesHub({ me, admins, authFetch }) {
+  const [sub, setSub] = useState("all"); // all | private
+  const [msgs, setMsgs] = useState([]);
+  const [recipient, setRecipient] = useState("");
+  const [body, setBody] = useState("");
+  const [priv, setPriv] = useState(false);
+  const [replyTo, setReplyTo] = useState(null);
+  const [replyBody, setReplyBody] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => {
+    authFetch(sub === "all" ? "/messages/public" : "/messages/private")
+      .then((r) => r.json())
+      .then(setMsgs)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sub]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 10000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function send(e) {
+    e.preventDefault();
+    setError("");
+    if (!recipient || !body.trim()) return;
+    const res = await authFetch("/messages/send", {
+      method: "POST",
+      body: JSON.stringify({
+        recipient,
+        body: body.trim(),
+        private: sub === "private" ? true : priv,
+      }),
+    }).catch(() => null);
+    if (!res || !res.ok) {
+      const data = res ? await res.json().catch(() => ({})) : {};
+      setError(data.detail || "Failed to send");
+      return;
+    }
+    setBody("");
+    load();
+  }
+
+  async function sendReply(rootId) {
+    if (!replyBody.trim()) return;
+    const res = await authFetch("/messages/send", {
+      method: "POST",
+      body: JSON.stringify({ parent_id: rootId, body: replyBody.trim() }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setReplyBody("");
+      setReplyTo(null);
+      load();
+    }
+  }
+
+  const roots = msgs.filter((m) => !m.parent_id);
+  const kids = {};
+  for (const m of msgs) {
+    if (m.parent_id) (kids[m.parent_id] ||= []).push(m);
+  }
+  Object.values(kids).forEach((list) => list.sort((a, b) => a.id - b.id));
+
+  return (
+    <main className="hub">
+      <div className="hub-tabs">
+        <button
+          className={`tab ${sub === "all" ? "active" : ""}`}
+          onClick={() => setSub("all")}
+        >
+          All (public)
+        </button>
+        <button
+          className={`tab ${sub === "private" ? "active" : ""}`}
+          onClick={() => setSub("private")}
+        >
+          🔒 Private
+        </button>
+      </div>
+
+      <form className="card composer-card" onSubmit={send}>
+        <select value={recipient} onChange={(e) => setRecipient(e.target.value)}>
+          <option value="">To…</option>
+          {admins
+            .filter((a) => a.email !== me.email)
+            .map((a) => (
+              <option key={a.email} value={a.email}>
+                {a.name || a.email}
+              </option>
+            ))}
+        </select>
+        <input
+          className="grow"
+          placeholder={
+            sub === "private" ? "Private message…" : "Message… (visible to all admins)"
+          }
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        {sub === "all" && (
+          <label className="priv-toggle">
+            <input
+              type="checkbox"
+              checked={priv}
+              onChange={(e) => setPriv(e.target.checked)}
+            />
+            🔒
+          </label>
+        )}
+        <button type="submit">Send</button>
+      </form>
+      {error && <p className="error">{error}</p>}
+
+      <div className="thread-list">
+        {roots.map((m) => (
+          <div key={m.id} className="msg-card card">
+            <div
+              className="wall-msg root"
+              style={{
+                background: actorTint(m.sender_name),
+                borderLeftColor: actorColor(m.sender_name),
+              }}
+            >
+              <span className="wall-sender" style={{ color: actorColor(m.sender_name) }}>
+                {m.sender_name}
+              </span>
+              <span className="to-chip">→ {m.recipient_name}</span>
+              {m.is_private && <span className="lock">🔒</span>}
+              <span className="wall-body">{m.body}</span>
+              <span className="wall-time">{timeAgo(m.created_at)}</span>
+            </div>
+            {(kids[m.id] || []).map((c) => (
+              <div
+                key={c.id}
+                className="wall-msg reply"
+                style={{ borderLeftColor: actorColor(c.sender_name) }}
+              >
+                <span
+                  className="wall-sender"
+                  style={{ color: actorColor(c.sender_name) }}
+                >
+                  {c.sender_name}
+                </span>
+                <span className="wall-body">{c.body}</span>
+                <span className="wall-time">{timeAgo(c.created_at)}</span>
+              </div>
+            ))}
+            {replyTo === m.id ? (
+              <form
+                className="reply-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  sendReply(m.id);
+                }}
+              >
+                <input
+                  className="grow"
+                  autoFocus
+                  placeholder="Reply…"
+                  value={replyBody}
+                  onChange={(e) => setReplyBody(e.target.value)}
+                />
+                <button type="submit">Reply</button>
+              </form>
+            ) : (
+              <button className="link reply-link" onClick={() => setReplyTo(m.id)}>
+                ↳ reply
+              </button>
+            )}
+          </div>
+        ))}
+        {roots.length === 0 && (
+          <div className="empty big">
+            {sub === "private"
+              ? "No private messages yet."
+              : "No messages yet — start one above."}
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
+
+// ---- Superadmin dashboard --------------------------------------------------------
+
+function BarList({ items }) {
+  const max = Math.max(1, ...items.map((i) => i.count));
+  return (
+    <div className="barlist">
+      {items.map((i) => (
+        <div key={i.actor} className="bar-row" title={`${i.actor}: ${i.count}`}>
+          <span className="bar-label">{i.actor}</span>
+          <span className="bar-track">
+            <span className="bar-fill" style={{ width: `${(i.count / max) * 100}%` }} />
+          </span>
+          <span className="bar-value">{i.count}</span>
+        </div>
+      ))}
+      {items.length === 0 && <div className="empty">No data.</div>}
+    </div>
+  );
+}
+
+function DayBars({ title, data }) {
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div className="card chart-card">
+      <div className="chart-title">{title}</div>
+      <div className="daybars">
+        {data.map((d) => (
+          <div
+            key={d.date}
+            className="daybar"
+            title={`${d.date}: ${d.count}`}
+            style={{ height: `${Math.max(6, (d.count / max) * 100)}%` }}
+          />
+        ))}
+        {data.length === 0 && <div className="empty">No data.</div>}
+      </div>
+      {data.length > 0 && (
+        <div className="chart-x">
+          <span>{data[0].date.slice(5)}</span>
+          <span>{data[data.length - 1].date.slice(5)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ authFetch }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    authFetch("/dashboard")
+      .then(async (r) => {
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          setError(d.detail || "Not allowed");
+          return;
+        }
+        setData(await r.json());
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (error) return <div className="empty big">{error}</div>;
+  if (!data) return <div className="empty big">Loading dashboard…</div>;
+
+  const tiles = [
+    { label: "Events · 7d", value: data.totals.events_7d },
+    { label: "Active people · 7d", value: data.totals.people_7d },
+    { label: "Messages · 7d", value: data.totals.messages_7d },
+    { label: "Reactions · 7d", value: data.totals.reactions_7d },
+  ];
+
+  return (
+    <main className="dash">
+      <div className="tiles">
+        {tiles.map((t) => (
+          <div key={t.label} className="card tile">
+            <div className="tile-value">{t.value}</div>
+            <div className="tile-label">{t.label}</div>
+          </div>
+        ))}
+      </div>
+      <div className="card chart-card">
+        <div className="chart-title">Who did what · actions in the last 7 days</div>
+        <BarList items={data.by_person} />
+      </div>
+      <div className="dash-grid">
+        <DayBars title="Feed events per day · 14d" data={data.feed_by_day} />
+        <DayBars title="PK logins per day · 14d" data={data.pk_usage} />
+        <DayBars title="KFC logins per day · 14d" data={data.kfc_usage} />
+      </div>
+    </main>
+  );
+}
+
 // ---- Live Updates feed ------------------------------------------------------
 
-const PAGE_FIRST = 10; // small first page = instant paint
+const PAGE_FIRST = 10;
 const PAGE_MORE = 20;
 
-function Feed({ authFetch, actor }) {
-  const [top, setTop] = useState([]); // freshest page, replaced by each poll
-  const [older, setOlder] = useState([]); // paged history, appended
-  const [cursor, setCursor] = useState(null); // {ts, id} for the next older page
+function Feed({ authFetch, actor, onActor }) {
+  const [top, setTop] = useState([]);
+  const [older, setOlder] = useState([]);
+  const [cursor, setCursor] = useState(null);
   const [hasMore, setHasMore] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
-  const [openComments, setOpenComments] = useState(null); // event id
-  const [expanded, setExpanded] = useState(null); // group id with extras open
+  const [openComments, setOpenComments] = useState(null);
+  const [expanded, setExpanded] = useState(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
   const actorQS = actor ? `&actor=${encodeURIComponent(actor)}` : "";
@@ -436,12 +825,10 @@ function Feed({ authFetch, actor }) {
     return () => clearInterval(t);
   }, [load]);
 
-  // Top page wins on overlap with paged history.
   const topIds = new Set(top.map((e) => e.id));
   const events = [...top, ...older.filter((e) => !topIds.has(e.id))];
 
   async function toggleLike(ev) {
-    // Optimistic flip; server response reconciles.
     const patch = (list) =>
       list.map((e) =>
         e.id === ev.id
@@ -498,7 +885,9 @@ function Feed({ authFetch, actor }) {
             </span>
             <div className="event-main">
               <div className="event-head">
-                <strong className="event-actor">{ev.actor}</strong>
+                <button className="actor-link" onClick={() => onActor(ev.actor)}>
+                  {ev.actor}
+                </button>
                 <span className={`badge badge-${ev.portal.toLowerCase()}`}>
                   {ev.portal}
                 </span>

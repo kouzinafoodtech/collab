@@ -99,6 +99,8 @@ class MessageRow(Base):
     sender = Column(String(255), nullable=False)
     recipient = Column(String(255), nullable=False)
     body = Column(Text, nullable=False)
+    is_private = Column(Integer, nullable=False, default=0)  # 1 = sender+recipient only
+    parent_id = Column(Integer, nullable=True, index=True)   # reply threading
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -152,6 +154,14 @@ if IS_MYSQL:
                 conn.execute(text(f"ALTER TABLE messages MODIFY {col} VARCHAR(255) NOT NULL"))
             except Exception:
                 pass  # already widened
+        for ddl in (
+            "ALTER TABLE messages ADD COLUMN is_private TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE messages ADD COLUMN parent_id INT NULL",
+        ):
+            try:
+                conn.execute(text(ddl))
+            except Exception:
+                pass  # already added
 
 
 def _iso_utc(dt) -> str:
@@ -170,6 +180,22 @@ def _iso_utc(dt) -> str:
 APP_SECRET = os.environ.get("APP_SECRET", "dev-only-insecure-secret-change-me")
 JWT_ALG = "HS256"
 TOKEN_TTL = timedelta(hours=12)
+SUPERADMIN_EMAIL = os.environ.get("SUPERADMIN_EMAIL", "admin@kftpl.com")
+
+
+def resolve_names(emails: set[str]) -> dict[str, str]:
+    """email -> display name, for the emails that belong to admins."""
+    if not emails:
+        return {}
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            pairs = conn.execute(
+                text("SELECT email, name FROM pkdb.admins WHERE email IN :emails")
+                .bindparams(bindparam("emails", expanding=True)),
+                {"emails": sorted(emails)},
+            ).all()
+        return {em: n for em, n in pairs if n}
+    return {a["email"]: a["name"] for a in list_active_admins()}
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
@@ -630,28 +656,16 @@ def leaderboard(admin: dict = Depends(current_admin)):
 
 @api.get("/wall/{email}")
 def get_wall(email: str, admin: dict = Depends(current_admin)):
-    """Recent messages sent TO this person, from anyone — shown to all admins."""
+    """Recent PUBLIC messages sent TO this person — shown to all admins."""
     with SessionLocal() as db:
         rows = (
             db.query(MessageRow)
-            .filter(MessageRow.recipient == email)
+            .filter(MessageRow.recipient == email, MessageRow.is_private == 0)
             .order_by(MessageRow.id.desc())
             .limit(30)
             .all()
         )
-    senders = sorted({r.sender for r in rows})
-    names = {}
-    if senders and IS_MYSQL:
-        with engine.connect() as conn:
-            pairs = conn.execute(
-                text(
-                    "SELECT email, name FROM pkdb.admins WHERE email IN :emails"
-                ).bindparams(bindparam("emails", expanding=True)),
-                {"emails": senders},
-            ).all()
-        names = {em: n for em, n in pairs}
-    elif senders:
-        names = {a["email"]: a["name"] for a in list_active_admins()}
+    names = resolve_names({r.sender for r in rows})
     return [
         {
             "id": r.id,
@@ -662,6 +676,202 @@ def get_wall(email: str, admin: dict = Depends(current_admin)):
         }
         for r in rows
     ]
+
+
+@api.get("/person/{actor}")
+def person(actor: str, admin: dict = Depends(current_admin)):
+    """Resolve a feed actor: 12h activity count + admin email if messageable."""
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=12)
+    with SessionLocal() as db:
+        count = (
+            db.query(FeedEventRow)
+            .filter(FeedEventRow.actor == actor, FeedEventRow.happened_at >= since)
+            .count()
+        )
+    email = None
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            r = conn.execute(
+                text("SELECT email FROM pkdb.admins WHERE name = :n AND active = 1 LIMIT 1"),
+                {"n": actor},
+            ).first()
+        email = r[0] if r else None
+    else:
+        email = next(
+            (a["email"] for a in list_active_admins() if a["name"] == actor), None
+        )
+    return {"actor": actor, "count": count, "email": email}
+
+
+# ---- Messages hub (public tree + private) ------------------------------------
+
+def _serialize_msgs(rows) -> list[dict]:
+    emails = {r.sender for r in rows} | {r.recipient for r in rows}
+    names = resolve_names(emails)
+    return [
+        {
+            "id": r.id,
+            "parent_id": r.parent_id,
+            "sender": r.sender,
+            "sender_name": names.get(r.sender) or r.sender.split("@")[0],
+            "recipient": r.recipient,
+            "recipient_name": names.get(r.recipient) or r.recipient.split("@")[0],
+            "is_private": bool(r.is_private),
+            "body": r.body,
+            "created_at": _iso_utc(r.created_at),
+        }
+        for r in rows
+    ]
+
+
+@api.get("/messages/public")
+def messages_public(admin: dict = Depends(current_admin)):
+    """Everyone's public messages (roots + replies), visible to all admins."""
+    with SessionLocal() as db:
+        rows = (
+            db.query(MessageRow)
+            .filter(MessageRow.is_private == 0)
+            .order_by(MessageRow.id.desc())
+            .limit(150)
+            .all()
+        )
+    return _serialize_msgs(rows)
+
+
+@api.get("/messages/private")
+def messages_private(admin: dict = Depends(current_admin)):
+    """My private messages only — sender or recipient is me."""
+    me_email = admin["email"]
+    with SessionLocal() as db:
+        rows = (
+            db.query(MessageRow)
+            .filter(
+                MessageRow.is_private == 1,
+                or_(MessageRow.sender == me_email, MessageRow.recipient == me_email),
+            )
+            .order_by(MessageRow.id.desc())
+            .limit(150)
+            .all()
+        )
+    return _serialize_msgs(rows)
+
+
+class SendIn(BaseModel):
+    recipient: Optional[str] = Field(default=None, max_length=255)
+    body: str = Field(..., min_length=1, max_length=2000)
+    private: bool = False
+    parent_id: Optional[int] = None
+
+
+@api.post("/messages/send", status_code=201)
+def messages_send(payload: SendIn, admin: dict = Depends(current_admin)):
+    text_body = payload.body.strip()
+    if not text_body:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    with SessionLocal() as db:
+        if payload.parent_id:
+            root = db.get(MessageRow, payload.parent_id)
+            if not root:
+                raise HTTPException(status_code=404, detail="Thread not found")
+            if root.is_private and admin["email"] not in (root.sender, root.recipient):
+                raise HTTPException(status_code=403, detail="Not your thread")
+            row = MessageRow(
+                sender=admin["email"],
+                recipient=root.recipient,
+                body=text_body,
+                is_private=root.is_private,
+                parent_id=root.parent_id or root.id,  # keep threads one level deep
+            )
+        else:
+            recipient = (payload.recipient or "").strip()
+            if not recipient:
+                raise HTTPException(status_code=400, detail="Recipient required")
+            if recipient == admin["email"]:
+                raise HTTPException(status_code=400, detail="You can't message yourself")
+            if not is_active_admin(recipient):
+                raise HTTPException(
+                    status_code=400, detail="Recipient must be an active admin"
+                )
+            row = MessageRow(
+                sender=admin["email"],
+                recipient=recipient,
+                body=text_body,
+                is_private=1 if payload.private else 0,
+            )
+        db.add(row)
+        db.commit()
+    return {"ok": True}
+
+
+# ---- Superadmin dashboard -----------------------------------------------------
+
+@api.get("/dashboard")
+def dashboard(admin: dict = Depends(current_admin)):
+    if admin["email"].lower() != SUPERADMIN_EMAIL.lower():
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    d7, d14 = now - timedelta(days=7), now - timedelta(days=14)
+    with SessionLocal() as db:
+        totals = {
+            "events_7d": db.query(FeedEventRow)
+            .filter(FeedEventRow.happened_at >= d7)
+            .count(),
+            "people_7d": db.query(FeedEventRow.actor)
+            .filter(FeedEventRow.happened_at >= d7)
+            .distinct()
+            .count(),
+            "messages_7d": db.query(MessageRow)
+            .filter(MessageRow.created_at >= d7)
+            .count(),
+            "reactions_7d": db.query(EventLikeRow)
+            .filter(EventLikeRow.created_at >= d7)
+            .count()
+            + db.query(EventCommentRow)
+            .filter(EventCommentRow.created_at >= d7)
+            .count(),
+        }
+        by_person = [
+            {"actor": a, "count": c}
+            for a, c in db.query(FeedEventRow.actor, func.count())
+            .filter(FeedEventRow.happened_at >= d7)
+            .group_by(FeedEventRow.actor)
+            .order_by(func.count().desc())
+            .limit(12)
+            .all()
+        ]
+        feed_by_day = [
+            {"date": str(d), "count": c}
+            for d, c in db.query(func.date(FeedEventRow.happened_at), func.count())
+            .filter(FeedEventRow.happened_at >= d14)
+            .group_by(func.date(FeedEventRow.happened_at))
+            .order_by(func.date(FeedEventRow.happened_at))
+            .all()
+        ]
+
+    def _logins_per_day(table: str) -> list[dict]:
+        if not IS_MYSQL:
+            return []
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        f"SELECT DATE(created_at) AS d, COUNT(*) AS c FROM {table} "
+                        "WHERE action = 'login' AND created_at >= :since "
+                        "GROUP BY DATE(created_at) ORDER BY d"
+                    ),
+                    {"since": d14},
+                ).all()
+            return [{"date": str(d), "count": c} for d, c in rows]
+        except Exception:
+            return []
+
+    return {
+        "totals": totals,
+        "by_person": by_person,
+        "feed_by_day": feed_by_day,
+        "pk_usage": _logins_per_day("pkdb.admin_audit_log"),
+        "kfc_usage": _logins_per_day("wodb.audit_log"),
+    }
 
 
 @api.post("/wall/{email}", status_code=201)
