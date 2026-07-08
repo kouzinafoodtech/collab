@@ -1292,27 +1292,37 @@ button.link {
   text-transform: none;
 }
 
-.rf-subgroup {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 0 12px;
-  border-top: 1px dashed var(--line);
+.rf-tree-node {
+  border-top: 1px solid var(--line);
 }
 
-.rf-subgroup:first-of-type {
+.rf-tree-node:first-of-type {
   border-top: none;
 }
 
-.rf-subgroup-head {
+.rf-tree-head {
+  width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding: 2px 2px 4px;
+  padding: 10px 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
 }
 
-.rf-subgroup-head .rf-count {
+.rf-tree-head:hover {
+  background: #fafafa;
+}
+
+.rf-tree-icon {
+  font-size: 0.9rem;
+}
+
+.rf-tree-head .rf-count {
   background: #fee2e2;
   color: #b91c1c;
 }
@@ -1320,6 +1330,15 @@ button.link {
 .rf-sg-email {
   font-size: 0.76rem;
   margin-left: auto;
+}
+
+.rf-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px 12px;
+  padding-left: 14px;
+  border-left: 2px solid #fca5a5;
 }
 
 .flag-form {

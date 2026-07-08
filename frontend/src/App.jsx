@@ -561,8 +561,12 @@ function PersonPanel({ person, me, authFetch, onClose }) {
 function RedFlags({ data, admins, authFetch }) {
   const [open, setOpen] = useState(null); // expanded rule key
   const [flagging, setFlagging] = useState(null); // "rulekey-ref" per-item flag
+  const [openKitchens, setOpenKitchens] = useState({}); // "rulekey::entity" -> bool
   const [templates, setTemplates] = useState({});
   const [composing, setComposing] = useState(null); // rule being emailed
+
+  const toggleKitchen = (id) =>
+    setOpenKitchens((cur) => ({ ...cur, [id]: !cur[id] }));
 
   useEffect(() => {
     authFetch("/redflags/templates")
@@ -660,18 +664,31 @@ function RedFlags({ data, admins, authFetch }) {
                   {rule.grouped && rule.count > 0 && " Grouped by kitchen."}
                 </div>
                 {rule.grouped
-                  ? (rule.subgroups || []).map((g) => (
-                      <div key={`sg-${g.entity}`} className="rf-subgroup">
-                        <div className="rf-subgroup-head">
-                          <strong className="rf-entity">{g.entity}</strong>
-                          <span className="rf-count">{g.count}</span>
-                          {g.email && (
-                            <span className="muted rf-sg-email">{g.email}</span>
+                  ? (rule.subgroups || []).map((g) => {
+                      const kid = `${rule.key}::${g.entity}`;
+                      const kOpen = !!openKitchens[kid];
+                      return (
+                        <div key={`sg-${g.entity}`} className="rf-tree-node">
+                          <button
+                            className="rf-tree-head"
+                            onClick={() => toggleKitchen(kid)}
+                          >
+                            <span className={`rf-caret ${kOpen ? "down" : ""}`}>▸</span>
+                            <span className="rf-tree-icon">🏢</span>
+                            <strong className="rf-entity">{g.entity}</strong>
+                            <span className="rf-count">{g.count}</span>
+                            {g.email && (
+                              <span className="muted rf-sg-email">{g.email}</span>
+                            )}
+                          </button>
+                          {kOpen && (
+                            <div className="rf-tree-children">
+                              {g.flags.map((f) => renderItem(f, false))}
+                            </div>
                           )}
                         </div>
-                        {g.flags.map((f) => renderItem(f, false))}
-                      </div>
-                    ))
+                      );
+                    })
                   : rule.flags.map((f) => renderItem(f, true))}
                 {rule.count === 0 && (
                   <div className="empty">No breaches — all clear ✅</div>
