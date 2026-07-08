@@ -11,6 +11,15 @@ function formatWhen(iso) {
   return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${time}`;
 }
 
+function fmtDate(d) {
+  if (!d) return "";
+  // date-only strings ("2026-07-08") — parse as parts to avoid tz day-shift
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d));
+  const dt = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(d);
+  if (isNaN(dt)) return String(d);
+  return dt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
 function timeAgo(iso) {
   const then = new Date(iso).getTime();
   const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
@@ -578,6 +587,49 @@ function RedFlags({ data, admins, authFetch }) {
       </div>
       {data.rules.map((rule) => {
         const isOpen = open === rule.key;
+        const renderItem = (f, showEntity) => {
+          const fid = `${rule.key}-${f.ref}`;
+          const ids = [];
+          if (f.order_id) ids.push(`#${f.order_id}`);
+          if (f.po_number) ids.push(`PO ${f.po_number}`);
+          if (f.so_id) ids.push(`SO ${f.so_id}`);
+          return (
+            <div key={fid} className="rf-item">
+              <div className="rf-row">
+                {showEntity && <strong className="rf-entity">{f.entity}</strong>}
+                <span className="rf-ids">
+                  {ids.length ? ids.join(" · ") : `${rule.ref_label} #${f.ref}`}
+                </span>
+                {f.vendor && <span className="chip chip-vendor">{f.vendor}</span>}
+                {f.state && <span className="chip chip-other">{f.state}</span>}
+                <span className="rf-over">{f.days_overdue}d overdue</span>
+              </div>
+              <div className="rf-sub muted">
+                {f.eta ? `ETA ${fmtDate(f.eta)}` : "no fixed ETA"}
+                <button
+                  className="link rf-flag-link"
+                  onClick={() => setFlagging(flagging === fid ? null : fid)}
+                >
+                  🚩 flag to…
+                </button>
+              </div>
+              {flagging === fid && (
+                <FlagForm
+                  admins={admins}
+                  authFetch={authFetch}
+                  payload={{
+                    ref: f.ref,
+                    entity: f.entity,
+                    label: rule.ref_label,
+                    state: f.state,
+                    days_overdue: f.days_overdue,
+                  }}
+                  onDone={() => setFlagging(null)}
+                />
+              )}
+            </div>
+          );
+        };
         return (
           <section key={rule.key} className="card rf-group">
             <div className="rf-group-head-row">
@@ -604,44 +656,23 @@ function RedFlags({ data, admins, authFetch }) {
             {isOpen && (
               <div className="rf-group-body">
                 <div className="muted rf-note">
-                  Orders from the last {rule.window_days} days, pending beyond{" "}
-                  {rule.sla_days} days. Latest first.
+                  {rule.note || `Last ${rule.window_days} days.`}
+                  {rule.grouped && rule.count > 0 && " Grouped by kitchen."}
                 </div>
-                {rule.flags.map((f) => {
-                  const fid = `${rule.key}-${f.ref}`;
-                  return (
-                    <div key={fid} className="rf-item">
-                      <div className="rf-row">
-                        <strong className="rf-entity">{f.entity}</strong>
-                        <span className="chip chip-other">{f.state}</span>
-                        <span className="rf-over">{f.days_overdue}d overdue</span>
+                {rule.grouped
+                  ? (rule.subgroups || []).map((g) => (
+                      <div key={`sg-${g.entity}`} className="rf-subgroup">
+                        <div className="rf-subgroup-head">
+                          <strong className="rf-entity">{g.entity}</strong>
+                          <span className="rf-count">{g.count}</span>
+                          {g.email && (
+                            <span className="muted rf-sg-email">{g.email}</span>
+                          )}
+                        </div>
+                        {g.flags.map((f) => renderItem(f, false))}
                       </div>
-                      <div className="rf-sub muted">
-                        {rule.ref_label} #{f.ref} · pending since {formatWhen(f.since)}
-                        <button
-                          className="link rf-flag-link"
-                          onClick={() => setFlagging(flagging === fid ? null : fid)}
-                        >
-                          🚩 flag to…
-                        </button>
-                      </div>
-                      {flagging === fid && (
-                        <FlagForm
-                          admins={admins}
-                          authFetch={authFetch}
-                          payload={{
-                            ref: f.ref,
-                            entity: f.entity,
-                            label: rule.ref_label,
-                            state: f.state,
-                            days_overdue: f.days_overdue,
-                          }}
-                          onDone={() => setFlagging(null)}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
+                    ))
+                  : rule.flags.map((f) => renderItem(f, true))}
                 {rule.count === 0 && (
                   <div className="empty">No breaches — all clear ✅</div>
                 )}
@@ -707,16 +738,21 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
   });
   const ordersPreview = rule.flags
     .slice(0, 5)
-    .map(
-      (f) =>
-        `• ${f.entity} — ${rule.ref_label} #${f.ref} — ${f.days_overdue}d overdue`
-    )
+    .map((f) => {
+      const ids = [];
+      if (f.order_id) ids.push(`Order #${f.order_id}`);
+      if (f.po_number) ids.push(`PO ${f.po_number}`);
+      if (f.so_id) ids.push(`SO ${f.so_id}`);
+      const idS = ids.join(" · ") || `${rule.ref_label} #${f.ref}`;
+      const vend = f.vendor ? ` [${f.vendor}]` : "";
+      const eta = f.eta ? ` — ETA ${fmtDate(f.eta)}` : "";
+      return `• ${f.entity} — ${idS}${vend}${eta} — ${f.days_overdue}d overdue`;
+    })
     .join("\n");
   const preview = body
     .replace("{orders}", ordersPreview + (rule.count > 5 ? `\n…and ${rule.count - 5} more` : ""))
     .replace("{count}", rule.count)
     .replace("{category}", rule.label)
-    .replace("{sla_days}", rule.sla_days)
     .replace("{due_date}", dueLabel);
 
   async function submit(saveOnly) {

@@ -1280,6 +1280,48 @@ button.link {
   color: #dc2626 !important;
 }
 
+.rf-ids {
+  font-weight: 700;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-vendor {
+  background: #e0e7ff;
+  color: #4338ca;
+  text-transform: none;
+}
+
+.rf-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0 12px;
+  border-top: 1px dashed var(--line);
+}
+
+.rf-subgroup:first-of-type {
+  border-top: none;
+}
+
+.rf-subgroup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 2px 2px 4px;
+}
+
+.rf-subgroup-head .rf-count {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.rf-sg-email {
+  font-size: 0.76rem;
+  margin-left: auto;
+}
+
 .flag-form {
   margin-top: 8px;
   background: #fff;
