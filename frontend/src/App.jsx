@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 const API = "/api";
 const SUPERADMIN = "admin@kftpl.com";
@@ -1017,10 +1017,36 @@ function FlagForm({ admins, authFetch, payload, onDone }) {
 const STATUS_OPTS = [
   ["not_started", "Not Started"],
   ["in_progress", "In Progress"],
+  ["blocked", "Blocked"],
   ["complete", "Complete"],
 ];
 
+// Order sections put the things that need attention first.
+const STATUS_ORDER = ["blocked", "in_progress", "not_started", "complete"];
+const STATUS_LABEL = Object.fromEntries(STATUS_OPTS);
+
 const PROG_PAGE = 10;
+
+// ETA as a health signal: relative label + a colour bucket.
+function etaInfo(p) {
+  if (p.status === "complete") return { label: p.eta ? `ETA ${p.eta}` : "done", cls: "muted" };
+  if (!p.eta) return { label: "no ETA", cls: "muted" };
+  const today = new Date(new Date().toDateString());
+  const days = Math.round((new Date(p.eta) - today) / 86400000);
+  if (days < 0) return { label: `${-days}d overdue`, cls: "eta-over" };
+  if (days === 0) return { label: "due today", cls: "eta-soon" };
+  if (days <= 2) return { label: `due in ${days}d`, cls: "eta-soon" };
+  return { label: `in ${days}d`, cls: "eta-ok" };
+}
+
+// Nudge for in-progress programs that have gone quiet.
+function staleDays(p) {
+  if (p.status !== "in_progress") return 0;
+  const ref = (p.last_update && p.last_update.created_at) || p.created_at;
+  if (!ref) return 0;
+  const days = Math.floor((Date.now() - new Date(ref).getTime()) / 86400000);
+  return days >= 7 ? days : 0;
+}
 
 function Programs({ admins, authFetch }) {
   const [items, setItems] = useState([]);
@@ -1028,6 +1054,7 @@ function Programs({ admins, authFetch }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const [groupBy, setGroupBy] = useState("none"); // none | status | owner
   const [form, setForm] = useState({
     name: "",
     objective: "",
@@ -1096,12 +1123,50 @@ function Programs({ admins, authFetch }) {
 
   const visible = items.filter((p) => showInactive || p.active);
 
+  // Group the loaded window for the chosen view. Items keep their global
+  // ETA-urgency order inside each section.
+  const groups = useMemo(() => {
+    if (groupBy === "none") return [{ key: "all", label: null, items: visible }];
+    if (groupBy === "status") {
+      return STATUS_ORDER.map((s) => ({
+        key: s,
+        label: STATUS_LABEL[s],
+        items: visible.filter((p) => p.status === s),
+      })).filter((g) => g.items.length);
+    }
+    // owner
+    const by = {};
+    for (const p of visible) {
+      const k = p.owner_name || "Unassigned";
+      (by[k] = by[k] || []).push(p);
+    }
+    return Object.entries(by)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([label, its]) => ({ key: label, label, items: its }));
+  }, [visible, groupBy]);
+
   return (
     <main className="hub">
       <div className="hub-head">
         <button onClick={() => setShowNew(!showNew)}>
           {showNew ? "Cancel" : "+ New program"}
         </button>
+        <div className="prog-view">
+          <span className="prog-view-lbl">Group</span>
+          {[
+            ["none", "Urgency"],
+            ["status", "Status"],
+            ["owner", "Owner"],
+          ].map(([v, l]) => (
+            <button
+              key={v}
+              className={`chip-toggle ${groupBy === v ? "on" : ""}`}
+              onClick={() => setGroupBy(v)}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
         <label className="priv-toggle inactive-toggle">
           <input
             type="checkbox"
@@ -1151,8 +1216,24 @@ function Programs({ admins, authFetch }) {
           </div>
         </form>
       )}
-      {visible.map((p) => (
-        <ProgramCard key={p.id} p={p} admins={admins} onPatch={patch} authFetch={authFetch} />
+      {groups.map((g) => (
+        <div key={g.key} className="prog-group">
+          {g.label && (
+            <div className="prog-group-head">
+              {g.label} <span className="prog-group-count">{g.items.length}</span>
+            </div>
+          )}
+          {g.items.map((p) => (
+            <ProgramCard
+              key={p.id}
+              p={p}
+              admins={admins}
+              onPatch={patch}
+              onReload={() => load(items.length)}
+              authFetch={authFetch}
+            />
+          ))}
+        </div>
       ))}
       {visible.length === 0 && (
         <div className="empty big">No programs yet — create the first one.</div>
@@ -1168,9 +1249,10 @@ function Programs({ admins, authFetch }) {
   );
 }
 
-function ProgramCard({ p, admins, onPatch, authFetch }) {
+function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
   const [editing, setEditing] = useState(false);
   const [showUpdates, setShowUpdates] = useState(false);
+  const [expandDesc, setExpandDesc] = useState(false);
   const [edit, setEdit] = useState({
     name: p.name,
     objective: p.objective || "",
@@ -1178,8 +1260,8 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
     owner_email: p.owner_email || "",
     eta: p.eta || "",
   });
-  const overdue =
-    p.eta && p.status !== "complete" && new Date(p.eta) < new Date(new Date().toDateString());
+  const eta = etaInfo(p);
+  const stale = staleDays(p);
 
   function saveEdit(e) {
     e.preventDefault();
@@ -1196,22 +1278,47 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
   return (
     <article className={`card prog-card ${p.active ? "" : "prog-inactive"}`}>
       <div className="prog-head">
-        <strong className="prog-name">{p.name}</strong>
-        <select
-          className={`status-select st-${p.status}`}
-          value={p.status}
-          onChange={(e) => onPatch(p.id, { status: e.target.value })}
-          disabled={!p.active}
-        >
-          {STATUS_OPTS.map(([v, l]) => (
-            <option key={v} value={v}>
-              {l}
-            </option>
-          ))}
-        </select>
+        <div className="prog-head-main">
+          <select
+            className={`status-select st-${p.status}`}
+            value={p.status}
+            onChange={(e) => onPatch(p.id, { status: e.target.value })}
+            disabled={!p.active}
+          >
+            {STATUS_OPTS.map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </select>
+          <strong className="prog-name">{p.name}</strong>
+        </div>
+        <span className={`prog-eta ${eta.cls}`}>{eta.label}</span>
       </div>
       {p.objective && <div className="prog-objective">🎯 {p.objective}</div>}
-      {p.description && <div className="prog-desc">{p.description}</div>}
+
+      {/* Latest progress update, surfaced inline so tracking needs no clicks. */}
+      {p.last_update ? (
+        <button
+          className="prog-last"
+          onClick={() => setShowUpdates(!showUpdates)}
+          title="See all updates"
+        >
+          <span className="prog-last-dot" />
+          <span className="prog-last-body">“{p.last_update.body}”</span>
+          <span className="prog-last-meta">
+            {p.last_update.author_name} · {timeAgo(p.last_update.created_at)} ago
+          </span>
+        </button>
+      ) : (
+        <div className="prog-last empty-update">No updates yet</div>
+      )}
+      {stale > 0 && <div className="prog-stale">⚠ no update in {stale}d</div>}
+
+      {p.description && (
+        <div className={`prog-desc ${expandDesc ? "" : "clamp"}`}>{p.description}</div>
+      )}
+
       <div className="prog-meta">
         {p.owner_name ? (
           <span className="prog-owner">
@@ -1223,13 +1330,18 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
         ) : (
           <span className="muted">no owner</span>
         )}
-        <span className={overdue ? "overdue" : "muted"}>
-          {p.eta ? `ETA ${p.eta}${overdue ? " · overdue" : ""}` : "no ETA"}
-        </span>
         <span className="prog-actions">
-          <button className="link" onClick={() => setShowUpdates(!showUpdates)}>
-            updates ({p.updates_count})
+          <button
+            className="link prog-add-update"
+            onClick={() => setShowUpdates(!showUpdates)}
+          >
+            ＋ update ({p.updates_count})
           </button>
+          {p.description && (
+            <button className="link" onClick={() => setExpandDesc(!expandDesc)}>
+              {expandDesc ? "less" : "details"}
+            </button>
+          )}
           <button className="link" onClick={() => setEditing(!editing)}>
             edit
           </button>
@@ -1280,12 +1392,14 @@ function ProgramCard({ p, admins, onPatch, authFetch }) {
           </div>
         </form>
       )}
-      {showUpdates && <ProgramUpdates programId={p.id} authFetch={authFetch} />}
+      {showUpdates && (
+        <ProgramUpdates programId={p.id} authFetch={authFetch} onPosted={onReload} />
+      )}
     </article>
   );
 }
 
-function ProgramUpdates({ programId, authFetch }) {
+function ProgramUpdates({ programId, authFetch, onPosted }) {
   const [updates, setUpdates] = useState([]);
   const [body, setBody] = useState("");
 
@@ -1309,6 +1423,7 @@ function ProgramUpdates({ programId, authFetch }) {
     if (res && res.ok) {
       setBody("");
       load();
+      if (onPosted) onPosted();
     }
   }
 

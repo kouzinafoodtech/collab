@@ -582,6 +582,7 @@ with SessionLocal() as _db:
 STATUS_LABELS = {
     "not_started": "Not Started",
     "in_progress": "In Progress",
+    "blocked": "Blocked",
     "complete": "Complete",
 }
 
@@ -2047,7 +2048,9 @@ def _owner_fields(owner_email: Optional[str]) -> tuple[Optional[str], Optional[s
     return owner_email, names.get(owner_email) or owner_email.split("@")[0]
 
 
-def _serialize_program(p: ProgramRow, updates_count: int = 0) -> dict:
+def _serialize_program(
+    p: ProgramRow, updates_count: int = 0, last_update: Optional[dict] = None
+) -> dict:
     return {
         "id": p.id,
         "name": p.name,
@@ -2059,6 +2062,7 @@ def _serialize_program(p: ProgramRow, updates_count: int = 0) -> dict:
         "status": p.status,
         "active": bool(p.active),
         "updates_count": updates_count,
+        "last_update": last_update,
         "created_at": _iso_utc(p.created_at),
     }
 
@@ -2080,14 +2084,31 @@ def list_programs(
         )
         ids = [p.id for p in rows]
         counts = {}
+        latest = {}
         if ids:
             counts = dict(
                 db.query(ProgramUpdateRow.program_id, func.count())
                 .filter(ProgramUpdateRow.program_id.in_(ids))
                 .group_by(ProgramUpdateRow.program_id)
             )
+            # newest update per program (id is monotonic, so max(id) = latest)
+            newest_ids = [
+                r[0]
+                for r in db.query(func.max(ProgramUpdateRow.id))
+                .filter(ProgramUpdateRow.program_id.in_(ids))
+                .group_by(ProgramUpdateRow.program_id)
+                .all()
+            ]
+            for u in db.query(ProgramUpdateRow).filter(ProgramUpdateRow.id.in_(newest_ids)):
+                latest[u.program_id] = {
+                    "author_name": u.author_name or u.author_email,
+                    "body": u.body,
+                    "created_at": _iso_utc(u.created_at),
+                }
     return {
-        "programs": [_serialize_program(p, counts.get(p.id, 0)) for p in rows],
+        "programs": [
+            _serialize_program(p, counts.get(p.id, 0), latest.get(p.id)) for p in rows
+        ],
         "total": total,
     }
 
