@@ -203,6 +203,12 @@ function Shell({ me, authFetch, logout }) {
   const [board, setBoard] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [redflags, setRedflags] = useState({ total: 0, rules: [] });
+  const [overview, setOverview] = useState({
+    program_owners: [],
+    messages_waiting: [],
+    messages_waiting_total: 0,
+    feedback_open: 0,
+  });
 
   const loadBoard = useCallback(() => {
     authFetch("/leaderboard")
@@ -212,6 +218,10 @@ function Shell({ me, authFetch, logout }) {
     authFetch("/redflags")
       .then((r) => r.json())
       .then(setRedflags)
+      .catch(() => {});
+    authFetch("/overview")
+      .then((r) => r.json())
+      .then(setOverview)
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -371,7 +381,19 @@ function Shell({ me, authFetch, logout }) {
       )}
 
       {view === "live" && (
-        <div className="layout">
+        <div className="layout layout-dash">
+          <DashRail
+            overview={overview}
+            open={peopleOpen}
+            onOpenMessages={() => {
+              setView("messages");
+              setPeopleOpen(false);
+            }}
+            onOpenFeedback={() => {
+              setView("feedback");
+              setPeopleOpen(false);
+            }}
+          />
           <div className="feed-col">
             {person && (
               <PersonPanel
@@ -392,6 +414,7 @@ function Shell({ me, authFetch, logout }) {
           <Sidebar
             board={board}
             admins={admins}
+            overview={overview}
             selected={person?.actor}
             open={peopleOpen}
             onCloseDrawer={() => setPeopleOpen(false)}
@@ -406,7 +429,7 @@ function Shell({ me, authFetch, logout }) {
           />
           {!peopleOpen && (
             <button className="people-fab" onClick={() => setPeopleOpen(true)}>
-              👥 People
+              📊 Dashboard
             </button>
           )}
         </div>
@@ -446,66 +469,130 @@ function PersonRow({ entry, selected, onClick, rank }) {
   );
 }
 
-function Sidebar({ board, admins, selected, open, onCloseDrawer, onSelect, onClear }) {
+// Left rail: my open threads + open feedback — the "what needs me" column.
+function DashRail({ overview, open, onOpenMessages, onOpenFeedback }) {
+  const waiting = overview.messages_waiting || [];
+  return (
+    <aside className={`dash-rail ${open ? "open" : ""}`}>
+      <div className="lb-section">
+        <div className="lb-title">
+          Messages waiting
+          {overview.messages_waiting_total > 0 && (
+            <span className="lb-title-badge">{overview.messages_waiting_total}</span>
+          )}
+        </div>
+        <div className="lb-list">
+          {waiting.map((w) => (
+            <button key={w.email} className="lb-item" onClick={onOpenMessages}>
+              <span className="avatar sm" style={{ background: actorColor(w.name) }}>
+                {initials(w.name)}
+              </span>
+              <span className="lb-name">{w.name}</span>
+              <span className="lb-count wait">{w.count}</span>
+            </button>
+          ))}
+          {waiting.length === 0 && (
+            <div className="empty">You're all caught up 🎉</div>
+          )}
+        </div>
+        <button className="link lb-more" onClick={onOpenMessages}>
+          Open messages →
+        </button>
+      </div>
+
+      <div className="lb-section">
+        <div className="lb-title">Feedback</div>
+        <button className="dash-stat" onClick={onOpenFeedback}>
+          <span className="dash-stat-num">{overview.feedback_open}</span>
+          <span className="dash-stat-lbl">
+            open item{overview.feedback_open === 1 ? "" : "s"}
+          </span>
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function Sidebar({
+  board,
+  admins,
+  overview,
+  selected,
+  open,
+  onCloseDrawer,
+  onSelect,
+  onClear,
+}) {
+  const [moreOwners, setMoreOwners] = useState(false);
   const [moreLead, setMoreLead] = useState(false);
-  const [moreAdmins, setMoreAdmins] = useState(false);
 
+  // Program owners: those with active programs (with counts) first; "More"
+  // reveals every other admin at 0 so anyone can be picked.
+  const owners = overview.program_owners || [];
+  const ownerEmails = new Set(owners.map((o) => o.email));
+  const zeroOwners = admins
+    .filter((a) => !ownerEmails.has(a.email))
+    .map((a) => ({ email: a.email, name: a.name || a.email, count: 0 }))
+    .sort((x, y) => x.name.localeCompare(y.name));
+  const shownOwners = moreOwners ? [...owners, ...zeroOwners] : owners;
+
+  // Leadership: every admin ranked by 12h activity (busiest first).
   const counts = Object.fromEntries(board.map((b) => [b.actor, b.count]));
-  const adminEntries = admins
-    .map((a) => ({
-      actor: a.name || a.email,
-      email: a.email,
-      count: counts[a.name] || 0,
-    }))
+  const leaders = admins
+    .map((a) => ({ actor: a.name || a.email, email: a.email, count: counts[a.name] || 0 }))
     .sort((x, y) => y.count - x.count || x.actor.localeCompare(y.actor));
-
-  const lead = board.slice(0, moreLead ? 15 : 5);
-  const shownAdmins = adminEntries.slice(0, moreAdmins ? adminEntries.length : 10);
+  const shownLeaders = moreLead ? leaders : leaders.slice(0, 12);
 
   return (
     <aside className={`leaderboard ${open ? "open" : ""}`}>
       <div className="lb-drawer-head">
-        <span>People</span>
+        <span>Dashboard</span>
         <button className="link" onClick={onCloseDrawer}>
           ✕ close
         </button>
       </div>
+
+      <div className="lb-section">
+        <div className="lb-title">Program owners</div>
+        <div className="lb-list">
+          {shownOwners.map((o) => (
+            <PersonRow
+              key={o.email}
+              entry={{ actor: o.name, count: o.count }}
+              selected={selected === o.name}
+              onClick={() =>
+                selected === o.name ? onClear() : onSelect({ actor: o.name })
+              }
+            />
+          ))}
+          {owners.length === 0 && !moreOwners && (
+            <div className="empty">No program owners yet.</div>
+          )}
+        </div>
+        {zeroOwners.length > 0 && (
+          <button className="link lb-more" onClick={() => setMoreOwners(!moreOwners)}>
+            {moreOwners ? "show less" : `show all admins (${zeroOwners.length} more)`}
+          </button>
+        )}
+      </div>
+
       <div className="lb-section">
         <div className="lb-title">Leadership · 12h</div>
         <div className="lb-list">
-          {lead.map((p, i) => (
+          {shownLeaders.map((p, i) => (
             <PersonRow
-              key={p.actor}
+              key={p.email}
               entry={p}
               rank={i + 1}
               selected={selected === p.actor}
               onClick={() => (selected === p.actor ? onClear() : onSelect(p))}
             />
           ))}
-          {board.length === 0 && <div className="empty">Quiet last 12 hours.</div>}
+          {leaders.length === 0 && <div className="empty">No admins.</div>}
         </div>
-        {board.length > 5 && (
+        {leaders.length > 12 && (
           <button className="link lb-more" onClick={() => setMoreLead(!moreLead)}>
-            {moreLead ? "show less" : `show ${Math.min(board.length, 15) - 5} more`}
-          </button>
-        )}
-      </div>
-
-      <div className="lb-section">
-        <div className="lb-title">Admins</div>
-        <div className="lb-list">
-          {shownAdmins.map((p) => (
-            <PersonRow
-              key={p.email}
-              entry={p}
-              selected={selected === p.actor}
-              onClick={() => (selected === p.actor ? onClear() : onSelect(p))}
-            />
-          ))}
-        </div>
-        {adminEntries.length > 10 && (
-          <button className="link lb-more" onClick={() => setMoreAdmins(!moreAdmins)}>
-            {moreAdmins ? "show less" : `show all ${adminEntries.length}`}
+            {moreLead ? "show less" : `show all ${leaders.length}`}
           </button>
         )}
       </div>

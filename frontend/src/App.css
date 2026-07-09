@@ -129,6 +129,66 @@ button.link {
   margin: 0 auto;
 }
 
+/* Live becomes a 3-column dashboard: what-needs-me | feed | who's-who. */
+.layout-dash {
+  grid-template-columns: 236px minmax(0, 1fr) 284px;
+  max-width: 1340px;
+}
+
+.dash-rail {
+  border-right: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.65);
+  padding: 16px 12px;
+  position: sticky;
+  top: 56px;
+  align-self: start;
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+}
+
+.lb-title-badge {
+  background: #ef4444;
+  color: #fff;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  margin-left: 6px;
+}
+
+.lb-count.wait {
+  background: #ef4444;
+}
+
+.dash-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.dash-stat:hover {
+  border-color: var(--brand);
+  filter: none;
+  background: #f4f4ff;
+}
+
+.dash-stat-num {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--brand);
+}
+
+.dash-stat-lbl {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
 .feed-col {
   min-width: 0;
   display: flex;
@@ -2186,6 +2246,20 @@ button.link {
   .feed-col {
     overflow-y: visible;
     order: 2;
+  }
+
+  /* Left rail (messages waiting + feedback) rides inline above the feed as a
+     compact "what needs me" card; the who's-who rail stays behind the FAB. */
+  .dash-rail {
+    order: 1;
+    position: static;
+    max-height: none;
+    overflow: visible;
+    border-right: none;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--card);
+    margin-bottom: 12px;
   }
 
   /* People live behind a floating button + full-screen drawer on mobile,

@@ -864,7 +864,7 @@ def leaderboard(admin: dict = Depends(current_admin)):
             .filter(FeedEventRow.happened_at >= since)
             .group_by(FeedEventRow.actor)
             .order_by(func.count().desc())
-            .limit(15)
+            .limit(50)
             .all()
         )
     entries = [{"actor": a, "count": c, "email": None} for a, c in rows]
@@ -886,6 +886,63 @@ def leaderboard(admin: dict = Depends(current_admin)):
             em = by_name.get(e["actor"])
             e["email"] = None if _excluded(em) else em
     return entries
+
+
+@api.get("/overview")
+def overview(admin: dict = Depends(current_admin)):
+    """Live-page dashboard widgets: program load per owner, private messages
+    awaiting MY reply (grouped by person), and open feedback count."""
+    me = admin["email"]
+    with SessionLocal() as db:
+        owner_rows = (
+            db.query(ProgramRow.owner_email, ProgramRow.owner_name, func.count())
+            .filter(ProgramRow.active == 1, ProgramRow.owner_email.isnot(None))
+            .group_by(ProgramRow.owner_email, ProgramRow.owner_name)
+            .all()
+        )
+        program_owners = sorted(
+            ({"email": e, "name": n or e, "count": int(c)} for e, n, c in owner_rows),
+            key=lambda o: (-o["count"], o["name"].lower()),
+        )
+
+        # "Waiting on me": private messages a person sent me that are newer than
+        # my most recent reply to that person (no read receipts exist, so this
+        # reply-gap is the best proxy for an open thread).
+        priv = (
+            db.query(MessageRow)
+            .filter(
+                MessageRow.is_private == 1,
+                or_(MessageRow.sender == me, MessageRow.recipient == me),
+            )
+            .order_by(MessageRow.id.asc())
+            .all()
+        )
+        my_last_to: dict[str, int] = {}   # other -> id of my latest msg to them
+        their_to_me: dict[str, list] = {}  # other -> ids they sent me
+        for m in priv:
+            if m.sender == me and m.recipient != me:
+                my_last_to[m.recipient] = m.id
+            elif m.recipient == me:
+                their_to_me.setdefault(m.sender, []).append(m.id)
+        waiting = []
+        for other, ids in their_to_me.items():
+            lr = my_last_to.get(other, 0)
+            cnt = sum(1 for i in ids if i > lr)
+            if cnt:
+                waiting.append({"email": other, "count": cnt})
+        names = resolve_names({w["email"] for w in waiting})
+        for w in waiting:
+            w["name"] = names.get(w["email"], w["email"])
+        waiting.sort(key=lambda w: (-w["count"], w["name"].lower()))
+
+        fb_open = db.query(FeedbackRow).filter(FeedbackRow.status == "open").count()
+
+    return {
+        "program_owners": program_owners,
+        "messages_waiting": waiting,
+        "messages_waiting_total": sum(w["count"] for w in waiting),
+        "feedback_open": fb_open,
+    }
 
 
 # ---- Message wall (visible to all admins, Twitter-mentions style) -----------
