@@ -205,6 +205,8 @@ function Shell({ me, authFetch, logout }) {
   const [redflags, setRedflags] = useState({ total: 0, rules: [] });
   const [overview, setOverview] = useState({
     program_owners: [],
+    awaiting_response: [],
+    awaiting_response_total: 0,
     messages_waiting: [],
     messages_waiting_total: 0,
     feedback_open: 0,
@@ -469,14 +471,40 @@ function PersonRow({ entry, selected, onClick, rank }) {
   );
 }
 
-// Left rail: my open threads + open feedback — the "what needs me" column.
+// Left rail: who owes replies + my own pending + open feedback.
 function DashRail({ overview, open, onOpenMessages, onOpenFeedback }) {
+  const awaiting = overview.awaiting_response || [];
   const waiting = overview.messages_waiting || [];
   return (
     <aside className={`dash-rail ${open ? "open" : ""}`}>
       <div className="lb-section">
         <div className="lb-title">
-          Messages waiting
+          Not responded
+          {awaiting.length > 0 && (
+            <span className="lb-title-badge">{awaiting.length}</span>
+          )}
+        </div>
+        <div className="lb-list">
+          {awaiting.map((p) => (
+            <button key={p.email} className="lb-item" onClick={onOpenMessages}>
+              <span className="avatar sm" style={{ background: actorColor(p.name) }}>
+                {initials(p.name)}
+              </span>
+              <span className="lb-name">{p.name}</span>
+              <span className="lb-count wait" title={`${p.count} waiting on a reply`}>
+                {p.count}
+              </span>
+            </button>
+          ))}
+          {awaiting.length === 0 && (
+            <div className="empty">Everyone's responded 🎉</div>
+          )}
+        </div>
+      </div>
+
+      <div className="lb-section">
+        <div className="lb-title">
+          Waiting on you
           {overview.messages_waiting_total > 0 && (
             <span className="lb-title-badge">{overview.messages_waiting_total}</span>
           )}

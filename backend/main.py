@@ -905,40 +905,53 @@ def overview(admin: dict = Depends(current_admin)):
             key=lambda o: (-o["count"], o["name"].lower()),
         )
 
-        # "Waiting on me": private messages a person sent me that are newer than
-        # my most recent reply to that person (no read receipts exist, so this
-        # reply-gap is the best proxy for an open thread).
-        priv = (
-            db.query(MessageRow)
-            .filter(
-                MessageRow.is_private == 1,
-                or_(MessageRow.sender == me, MessageRow.recipient == me),
-            )
+        # Every message is directed at one admin (replies inherit the root's
+        # recipient), so a conversation is a directed pair. No read receipts
+        # exist, so "responded" = sent a later message back on that thread.
+        rows = (
+            db.query(MessageRow.id, MessageRow.sender, MessageRow.recipient)
             .order_by(MessageRow.id.asc())
             .all()
         )
-        my_last_to: dict[str, int] = {}   # other -> id of my latest msg to them
-        their_to_me: dict[str, list] = {}  # other -> ids they sent me
-        for m in priv:
-            if m.sender == me and m.recipient != me:
-                my_last_to[m.recipient] = m.id
-            elif m.recipient == me:
-                their_to_me.setdefault(m.sender, []).append(m.id)
+        latest_pair: dict[tuple, int] = {}   # (sender, recipient) -> latest id
+        my_incoming: dict[str, list] = {}    # sender -> ids they sent me
+        for mid, s, r in rows:
+            if not s or not r or s == r:
+                continue
+            latest_pair[(s, r)] = mid  # asc order → last write is the max id
+            if r == me:
+                my_incoming.setdefault(s, []).append(mid)
+
+        # Org-wide: for each person R, how many distinct people are still
+        # waiting on R (R got the last word and never replied).
+        owes: dict[str, set] = {}
+        for (s, r), mid in latest_pair.items():
+            if mid > latest_pair.get((r, s), 0):
+                owes.setdefault(r, set()).add(s)
+        awaiting = [{"email": r, "count": len(waiters)} for r, waiters in owes.items()]
+
+        # Personal: people I owe a reply to, counted by unanswered messages.
         waiting = []
-        for other, ids in their_to_me.items():
-            lr = my_last_to.get(other, 0)
+        for other, ids in my_incoming.items():
+            lr = latest_pair.get((me, other), 0)
             cnt = sum(1 for i in ids if i > lr)
             if cnt:
                 waiting.append({"email": other, "count": cnt})
-        names = resolve_names({w["email"] for w in waiting})
+
+        names = resolve_names({x["email"] for x in awaiting} | {w["email"] for w in waiting})
+        for x in awaiting:
+            x["name"] = names.get(x["email"], x["email"])
         for w in waiting:
             w["name"] = names.get(w["email"], w["email"])
+        awaiting.sort(key=lambda x: (-x["count"], x["name"].lower()))
         waiting.sort(key=lambda w: (-w["count"], w["name"].lower()))
 
         fb_open = db.query(FeedbackRow).filter(FeedbackRow.status == "open").count()
 
     return {
         "program_owners": program_owners,
+        "awaiting_response": awaiting,
+        "awaiting_response_total": len(awaiting),
         "messages_waiting": waiting,
         "messages_waiting_total": sum(w["count"] for w in waiting),
         "feedback_open": fb_open,
