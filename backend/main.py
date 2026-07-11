@@ -1684,6 +1684,117 @@ def _compute_partner_grn(conn, now: datetime) -> list[dict]:
     return out
 
 
+# Delhi upload paths are stored relative (e.g. /uploads/delhi/...); serve them
+# off the PartnerKart host so the bill photo is a clickable link.
+DELHI_UPLOAD_BASE = os.environ.get("DELHI_UPLOAD_BASE", "https://partner.kftpl.com")
+DELHI_GRN_SLA_DAYS = 2   # an "ordered" batch older than this is GRN-overdue
+DELHI_WINDOW_DAYS = 7
+
+
+def _compute_delhi_grn(conn, now: datetime) -> list[dict]:
+    """Delhi orders (grouped by order batch) with a problem in the last week:
+    (a) GRN not done — still 'ordered' beyond the SLA, or (b) GRN done but no
+    bill/invoice uploaded. Each flag carries its line items for drill-down and
+    the uploaded bill photo URL when present."""
+    sql = (
+        "SELECT o.order_batch_id AS batch, o.id AS row_id, o.status, "
+        "o.quantity, o.received_quantity, o.total_amount, o.unit_price, "
+        "o.invoice_number, o.delivered_at, o.created_at, o.delivery_photo_url, "
+        "k.name AS kitchen, k.email AS kitchen_email, v.name AS vendor, "
+        "di.name AS item_name "
+        "FROM pkdb.delhi_orders o "
+        "LEFT JOIN pkdb.coco_kitchens k ON k.id = o.kitchen_id "
+        "LEFT JOIN pkdb.delhi_vendors v ON v.id = o.vendor_id "
+        "LEFT JOIN pkdb.delhi_order_items di ON di.id = o.item_id "
+        "WHERE o.created_at >= :window "
+        "ORDER BY o.order_batch_id, o.id"
+    )
+    try:
+        rows = conn.execute(
+            text(sql), {"window": now - timedelta(days=DELHI_WINDOW_DAYS)}
+        ).mappings().all()
+    except Exception:
+        return []
+
+    batches: dict = {}
+    for r in rows:
+        b = batches.setdefault(
+            r["batch"],
+            {
+                "kitchen": r["kitchen"] or "—",
+                "email": (r["kitchen_email"] or "").strip(),
+                "vendor": (r["vendor"] or "").strip() or None,
+                "created": r["created_at"],
+                "delivered": r["delivered_at"],
+                "invoice": None,
+                "bill_url": None,
+                "pending": 0,
+                "amount": 0.0,
+                "items": [],
+                "ref_id": r["row_id"],
+            },
+        )
+        if r["row_id"] < b["ref_id"]:
+            b["ref_id"] = r["row_id"]
+        if r["status"] == "ordered":
+            b["pending"] += 1
+        if r["invoice_number"] and str(r["invoice_number"]).strip():
+            b["invoice"] = str(r["invoice_number"]).strip()
+        if r["delivery_photo_url"] and not b["bill_url"]:
+            b["bill_url"] = r["delivery_photo_url"]
+        if r["delivered_at"] and (not b["delivered"] or r["delivered_at"] > b["delivered"]):
+            b["delivered"] = r["delivered_at"]
+        b["amount"] += float(r["total_amount"] or 0)
+        b["items"].append(
+            {
+                "name": r["item_name"] or "—",
+                "ordered": float(r["quantity"] or 0),
+                "received": float(r["received_quantity"]) if r["received_quantity"] is not None else None,
+                "amount": float(r["total_amount"] or 0),
+            }
+        )
+
+    grn_cutoff = now - timedelta(days=DELHI_GRN_SLA_DAYS)
+    out = []
+    for bid, b in batches.items():
+        if b["pending"] > 0:
+            if not b["created"] or b["created"] > grn_cutoff:
+                continue  # still within the receiving SLA — not a flag yet
+            kind, state = "grn", "GRN pending"
+            base = b["created"]
+        elif not b["invoice"]:
+            kind, state = "bill", "Bill pending"
+            base = b["delivered"] or b["created"]
+        else:
+            continue  # received and billed — all good
+        days = max(0, (now - base).days) if base else 0
+        bill_url = None
+        if b["bill_url"]:
+            u = b["bill_url"]
+            bill_url = u if u.startswith("http") else DELHI_UPLOAD_BASE + u
+        out.append(
+            {
+                "entity": b["kitchen"],
+                "contact_email": b["email"],
+                "vendor": b["vendor"],
+                "state": state,
+                "kind": kind,
+                "ident": f"Batch {str(bid)[:8]}",
+                "amount": round(b["amount"], 2) or None,
+                "bill_url": bill_url,
+                "items": b["items"],
+                "days_overdue": days,
+                "po_number": None,
+                "order_id": None,
+                "so_id": None,
+                "eta": None,
+                "ref": b["ref_id"],  # a real delhi_orders row id in the batch
+            }
+        )
+    out.sort(key=lambda f: (f["entity"].lower(), -f["days_overdue"]))
+    return out
+
+
 REDFLAG_RULES = [
     {
         "key": "coco_grn",
@@ -1702,6 +1813,15 @@ REDFLAG_RULES = [
         "group_by_kitchen": False,
         "note": "Completed orders with GRN pending beyond 2 days",
         "compute": _compute_partner_grn,
+    },
+    {
+        "key": "delhi_grn",
+        "label": "Delhi orders — GRN not done / bill not uploaded",
+        "ref_label": "Delhi order",
+        "party_label": "Kitchen",
+        "group_by_kitchen": True,
+        "note": "Last 7 days: GRN pending (>2d) or received but no bill uploaded",
+        "compute": _compute_delhi_grn,
     },
 ]
 
@@ -1730,6 +1850,16 @@ DEFAULT_TEMPLATES = {
             "Thank you,\nKouzina Team"
         ),
     },
+    "delhi_grn": {
+        "subject": "Delhi orders — GRN / bill pending",
+        "body": (
+            "Team,\n\n"
+            "The following Delhi orders need attention — either the GRN is not "
+            "done, or it is done but the bill has not been uploaded:\n\n{orders}\n\n"
+            "Please complete the GRN and upload the bills by {due_date}.\n\n"
+            "— Kouzina Live"
+        ),
+    },
 }
 
 _redflag_cache: dict = {"at": None, "data": None}
@@ -1754,6 +1884,11 @@ def _flag_json(f: dict) -> dict:
         "vendor": f.get("vendor"),
         "eta": eta_s,
         "days_overdue": int(f.get("days_overdue") or 0),
+        # optional richer fields (Delhi orders): drill-down items, bill link, etc.
+        "ident": f.get("ident"),
+        "amount": f.get("amount"),
+        "bill_url": f.get("bill_url"),
+        "items": f.get("items"),
     }
 
 
@@ -1858,11 +1993,23 @@ def redflags(admin: dict = Depends(current_admin)):
              "order_id": 37474, "so_id": "#37400", "vendor": None, "eta": None,
              "days_overdue": 2, "state": "completed", "ref": 37474},
         ]
+        delhi_demo = [
+            {"entity": "DLF", "contact_email": "dlf@kftpl.com", "vendor": "Sai Enterprises",
+             "state": "GRN pending", "kind": "grn", "ident": "Batch cf5f5e5a", "amount": 4200.0,
+             "bill_url": None, "days_overdue": 3, "ref": 90101,
+             "items": [{"name": "Coal Supply (DLF)", "ordered": 5, "received": None, "amount": 4200}]},
+            {"entity": "DLF", "contact_email": "dlf@kftpl.com", "vendor": "Madhav Gas",
+             "state": "Bill pending", "kind": "bill", "ident": "Batch 9ac81137", "amount": 1800.0,
+             "bill_url": "https://partner.kftpl.com/uploads/delhi/delhi_2209_1783462777.jpg",
+             "days_overdue": 2, "ref": 90102,
+             "items": [{"name": "GAS CYLINDER (19 KGS)", "ordered": 2, "received": 2, "amount": 1800}]},
+        ]
         rules_out = [
             _rule_out(REDFLAG_RULES[0], coco_demo),
             _rule_out(REDFLAG_RULES[1], partner_demo),
+            _rule_out(REDFLAG_RULES[2], delhi_demo),
         ]
-        total = len(coco_demo) + len(partner_demo)
+        total = len(coco_demo) + len(partner_demo) + len(delhi_demo)
     data = {
         "total": total,
         "rules": rules_out,
@@ -1924,9 +2071,10 @@ def flag_to_admins(
     if not recipients:
         raise HTTPException(status_code=400, detail="Pick at least one admin")
     who = admin.get("name") or admin["email"]
+    what = (payload.state or "").strip() or "GRN overdue"
     line = (
         f"🚩 {payload.label} #{payload.ref} · {payload.entity} · "
-        f"{payload.days_overdue}d GRN overdue"
+        f"{payload.days_overdue}d · {what}"
     )
     if payload.note:
         line += f" — {payload.note.strip()}"
@@ -1970,15 +2118,21 @@ def _orders_block(flags: list[dict], ref_label: str) -> str:
             ids.append(f"PO {f['po_number']}")
         if f.get("so_id"):
             ids.append(f"SO {f['so_id']}")
+        if f.get("ident"):
+            ids.append(f["ident"])
         id_s = " · ".join(ids) or f"{ref_label} #{f.get('ref')}"
         parts = [f"• {f['entity']} — {id_s}"]
         if f.get("vendor"):
             parts.append(f"[{f['vendor']}]")
+        if f.get("state"):
+            parts.append(f"— {f['state']}")
         eta = f.get("eta")
         if eta:
             eta_s = eta.strftime("%d %b %Y") if hasattr(eta, "strftime") else str(eta)
             parts.append(f"— ETA {eta_s}")
-        parts.append(f"— {f.get('days_overdue', 0)}d overdue")
+        parts.append(f"— {f.get('days_overdue', 0)}d")
+        if f.get("bill_url"):
+            parts.append(f"— bill: {f['bill_url']}")
         lines.append(" ".join(parts))
     return "\n".join(lines) if lines else "(none)"
 

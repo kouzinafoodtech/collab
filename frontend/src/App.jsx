@@ -677,11 +677,14 @@ function RedFlags({ data, admins, authFetch }) {
   const [open, setOpen] = useState(null); // expanded rule key
   const [flagging, setFlagging] = useState(null); // "rulekey-ref" per-item flag
   const [openKitchens, setOpenKitchens] = useState({}); // "rulekey::entity" -> bool
+  const [openItems, setOpenItems] = useState({}); // "rulekey-ref" -> bool (drill-down)
   const [templates, setTemplates] = useState({});
   const [composing, setComposing] = useState(null); // rule being emailed
 
   const toggleKitchen = (id) =>
     setOpenKitchens((cur) => ({ ...cur, [id]: !cur[id] }));
+  const toggleItems = (id) =>
+    setOpenItems((cur) => ({ ...cur, [id]: !cur[id] }));
 
   useEffect(() => {
     authFetch("/redflags/templates")
@@ -712,6 +715,8 @@ function RedFlags({ data, admins, authFetch }) {
           if (f.order_id) ids.push(`#${f.order_id}`);
           if (f.po_number) ids.push(`PO ${f.po_number}`);
           if (f.so_id) ids.push(`SO ${f.so_id}`);
+          if (f.ident) ids.push(f.ident);
+          const itemsOpen = openItems[fid];
           return (
             <div key={fid} className="rf-item">
               <div className="rf-row">
@@ -721,10 +726,29 @@ function RedFlags({ data, admins, authFetch }) {
                 </span>
                 {f.vendor && <span className="chip chip-vendor">{f.vendor}</span>}
                 {f.state && <span className="chip chip-other">{f.state}</span>}
-                <span className="rf-over">{f.days_overdue}d overdue</span>
+                {f.amount != null && (
+                  <span className="rf-amount">₹{Math.round(f.amount).toLocaleString("en-IN")}</span>
+                )}
+                <span className="rf-over">{f.days_overdue}d</span>
               </div>
               <div className="rf-sub muted">
-                {f.eta ? `ETA ${fmtDate(f.eta)}` : "no fixed ETA"}
+                {f.eta ? `ETA ${fmtDate(f.eta)}` : null}
+                {f.items?.length > 0 && (
+                  <button className="link rf-items-link" onClick={() => toggleItems(fid)}>
+                    {itemsOpen ? "▾" : "▸"} {f.items.length} item
+                    {f.items.length === 1 ? "" : "s"}
+                  </button>
+                )}
+                {f.bill_url && (
+                  <a
+                    className="link rf-bill-link"
+                    href={f.bill_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    🧾 bill
+                  </a>
+                )}
                 <button
                   className="link rf-flag-link"
                   onClick={() => setFlagging(flagging === fid ? null : fid)}
@@ -732,6 +756,25 @@ function RedFlags({ data, admins, authFetch }) {
                   🚩 flag to…
                 </button>
               </div>
+              {itemsOpen && f.items?.length > 0 && (
+                <div className="rf-items">
+                  {f.items.map((it, i) => (
+                    <div key={i} className="rf-item-row">
+                      <span className="rf-item-name">{it.name}</span>
+                      <span className="rf-item-qty">
+                        {it.received != null && it.received !== it.ordered
+                          ? `${it.received}/${it.ordered}`
+                          : it.ordered}
+                      </span>
+                      {it.amount ? (
+                        <span className="rf-item-amt">
+                          ₹{Math.round(it.amount).toLocaleString("en-IN")}
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
               {flagging === fid && (
                 <FlagForm
                   admins={admins}
@@ -875,10 +918,12 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
       if (f.order_id) ids.push(`Order #${f.order_id}`);
       if (f.po_number) ids.push(`PO ${f.po_number}`);
       if (f.so_id) ids.push(`SO ${f.so_id}`);
+      if (f.ident) ids.push(f.ident);
       const idS = ids.join(" · ") || `${rule.ref_label} #${f.ref}`;
       const vend = f.vendor ? ` [${f.vendor}]` : "";
+      const st = f.state ? ` — ${f.state}` : "";
       const eta = f.eta ? ` — ETA ${fmtDate(f.eta)}` : "";
-      return `• ${f.entity} — ${idS}${vend}${eta} — ${f.days_overdue}d overdue`;
+      return `• ${f.entity} — ${idS}${vend}${st}${eta} — ${f.days_overdue}d`;
     })
     .join("\n");
   const preview = body
