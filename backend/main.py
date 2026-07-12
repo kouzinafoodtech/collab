@@ -564,6 +564,31 @@ SOURCES = [
         ),
         "init": _init_sql("financedb.bill_activity_log", time_col="performed_at"),
     },
+    {
+        # Kouzina Admin Console. Already writes a rich audit_log; we resolve the
+        # actor's name off pkdb.admins when it's a kftpl email, parse target's
+        # "type:id" into entity, pass meta through as details, and drop the
+        # operational noise (auth, tenant switches, AI queries, cookie pastes).
+        "name": "kouzinaos.audit_log",
+        "portal": "KAC",
+        "sql": (
+            "SELECT a.id, COALESCE(adm.name, a.user_email, 'Unknown') AS actor, "
+            "a.action, "
+            "CASE WHEN a.target LIKE '%:%' THEN SUBSTRING_INDEX(a.target,':',1) "
+            "ELSE NULL END AS entity_type, "
+            "CASE WHEN a.target LIKE '%:%' THEN SUBSTRING_INDEX(a.target,':',-1) "
+            "ELSE a.target END AS entity_id, "
+            "a.meta AS details, a.created_at "
+            "FROM kouzinaos.audit_log a "
+            "LEFT JOIN pkdb.admins adm ON adm.email = a.user_email "
+            "WHERE a.id > :wm AND a.action NOT IN ("
+            "'login','logout','switch_tenant','permission_denied','ai_sql','ai_ask',"
+            "'swiggy_cookie_paste','zomato_cookie_paste','petpooja_cookie_paste',"
+            "'use_shared_session','super_cron_run_now','password_change') "
+            "ORDER BY a.id LIMIT :lim"
+        ),
+        "init": _init_sql("kouzinaos.audit_log"),
+    },
 ]
 
 # Launch-app actions (kitchen launch: manpower, milestones) live in the PK
