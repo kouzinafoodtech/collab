@@ -1695,8 +1695,12 @@ def _compute_coco_grn(conn, now: datetime) -> list[dict]:
     ]
 
 
+PARTNER_GRN_MAX_DAYS = 30   # ignore orders overdue more than a month — no point
+
+
 def _compute_partner_grn(conn, now: datetime) -> list[dict]:
-    """Partner orders completed but GRN not done beyond 2 days. The status
+    """Partner orders completed but GRN not done beyond 2 days, and due within
+    the last month (older ones are stale — no point chasing). The status
     (incl. Drop Shipment) is carried through as the type."""
     sql = (
         "SELECT o.id AS order_id, o.parent_order_id AS so_ref, "
@@ -1705,13 +1709,16 @@ def _compute_partner_grn(conn, now: datetime) -> list[dict]:
         "FROM pkdb.orders o LEFT JOIN pkdb.partners p ON p.id = o.partner_id "
         "WHERE o.status IN ('completed','partial_completed') "
         "AND o.grn_completed_at IS NULL "
-        "AND o.updated_at < :cutoff AND o.created_at >= :window "
+        "AND o.updated_at < :cutoff AND o.updated_at >= :window "
         "ORDER BY o.updated_at DESC LIMIT 600"
     )
     try:
         rows = conn.execute(
             text(sql),
-            {"cutoff": now - timedelta(days=2), "window": now - timedelta(days=30)},
+            {
+                "cutoff": now - timedelta(days=2),
+                "window": now - timedelta(days=PARTNER_GRN_MAX_DAYS),
+            },
         ).mappings().all()
     except Exception:
         return []
@@ -1862,7 +1869,7 @@ REDFLAG_RULES = [
         "ref_label": "Partner order",
         "party_label": "Partner",
         "group_by_kitchen": False,
-        "note": "Completed orders with GRN pending beyond 2 days",
+        "note": "Completed in the last month, GRN pending beyond 2 days",
         "compute": _compute_partner_grn,
     },
     {
