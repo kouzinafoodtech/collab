@@ -1699,9 +1699,27 @@ PARTNER_GRN_MAX_DAYS = 30   # ignore orders overdue more than a month — no poi
 
 
 def _compute_partner_grn(conn, now: datetime) -> list[dict]:
-    """Partner orders completed but GRN not done beyond 2 days, and due within
-    the last month (older ones are stale — no point chasing). The status
-    (incl. Drop Shipment) is carried through as the type."""
+    """Partner orders completed but GRN not done beyond 2 days, due within the
+    last month. Aligned with PartnerKart's Auto-GRN rule: when it's enabled we
+    never flag orders completed before its effective_from (pre-rule legacy that
+    Auto-GRN deliberately skips). Note Auto-GRN only clears fully 'completed'
+    orders — 'partial_completed' ones never auto-clear and keep showing until
+    someone GRNs them. The status is carried through as the type."""
+    window = now - timedelta(days=PARTNER_GRN_MAX_DAYS)
+    # Respect the Auto-GRN effective date so we match what it will actually
+    # clear, instead of surfacing the pre-rule backlog it won't touch.
+    try:
+        s = conn.execute(
+            text("SELECT enabled, effective_from FROM pkdb.partner_auto_grn_settings "
+                 "ORDER BY id LIMIT 1")
+        ).mappings().first()
+        if s and s["enabled"] and s["effective_from"]:
+            eff = s["effective_from"]
+            eff_dt = datetime(eff.year, eff.month, eff.day) if hasattr(eff, "year") else None
+            if eff_dt and eff_dt > window:
+                window = eff_dt
+    except Exception:
+        pass
     sql = (
         "SELECT o.id AS order_id, o.parent_order_id AS so_ref, "
         "p.name AS partner, p.email AS partner_email, o.status AS state, "
@@ -1715,10 +1733,7 @@ def _compute_partner_grn(conn, now: datetime) -> list[dict]:
     try:
         rows = conn.execute(
             text(sql),
-            {
-                "cutoff": now - timedelta(days=2),
-                "window": now - timedelta(days=PARTNER_GRN_MAX_DAYS),
-            },
+            {"cutoff": now - timedelta(days=2), "window": window},
         ).mappings().all()
     except Exception:
         return []
@@ -1869,7 +1884,7 @@ REDFLAG_RULES = [
         "ref_label": "Partner order",
         "party_label": "Partner",
         "group_by_kitchen": False,
-        "note": "Completed in the last month, GRN pending beyond 2 days",
+        "note": "GRN pending >2d since Auto-GRN start. Partial orders never auto-clear.",
         "compute": _compute_partner_grn,
     },
     {
