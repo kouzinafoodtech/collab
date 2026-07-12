@@ -1917,6 +1917,11 @@ button.link {
   color: #8e44ad;
 }
 
+.badge-launch {
+  background: #fff1e6;
+  color: #d9730d;
+}
+
 .chip {
   font-size: 0.72rem;
   font-weight: 600;

@@ -566,10 +566,23 @@ SOURCES = [
     },
 ]
 
+# Launch-app actions (kitchen launch: manpower, milestones) live in the PK
+# audit log but are their own workstream — badge them LAUNCH, not PK.
+LAUNCH_PORTAL = "LAUNCH"
+_LAUNCH_MARKERS = ("launch", "milestone", "manpower")
+
+
+def _portal_for(base_portal: str, entity_type: Optional[str], action: Optional[str]) -> str:
+    blob = f"{entity_type or ''} {action or ''}".lower()
+    if any(m in blob for m in _LAUNCH_MARKERS):
+        return LAUNCH_PORTAL
+    return base_portal
+
+
 # Keep the feed scoped to the registered portals: drop events from sources
 # that were removed from the registry (idempotent, runs at boot). "LIVE" is
 # this app's own portal (programs, feedback) — never clean it up.
-_ACTIVE_PORTALS = sorted({s["portal"] for s in SOURCES} | {"LIVE"})
+_ACTIVE_PORTALS = sorted({s["portal"] for s in SOURCES} | {"LIVE", LAUNCH_PORTAL})
 with SessionLocal() as _db:
     _db.query(FeedEventRow).filter(
         ~FeedEventRow.portal.in_(_ACTIVE_PORTALS)
@@ -577,6 +590,17 @@ with SessionLocal() as _db:
     _db.query(IngestStateRow).filter(
         ~IngestStateRow.source.in_([s["name"] for s in SOURCES])
     ).delete(synchronize_session=False)
+    # Re-badge already-ingested launch events (they landed as PK before the
+    # LAUNCH portal existed). Action names are launch-specific, so this won't
+    # touch LIVE program/feedback events.
+    _db.query(FeedEventRow).filter(
+        FeedEventRow.portal != "LIVE",
+        or_(
+            FeedEventRow.action.like("%launch%"),
+            FeedEventRow.action.like("%milestone%"),
+            FeedEventRow.action.like("%manpower%"),
+        ),
+    ).update({FeedEventRow.portal: LAUNCH_PORTAL}, synchronize_session=False)
     _db.commit()
 
 STATUS_LABELS = {
@@ -735,7 +759,9 @@ def maybe_ingest():
                             continue
                         db.add(
                             FeedEventRow(
-                                portal=source["portal"],
+                                portal=_portal_for(
+                                    source["portal"], r["entity_type"], r["action"]
+                                ),
                                 source=source["name"],
                                 source_id=r["id"],
                                 actor=r["actor"] or "Unknown",
