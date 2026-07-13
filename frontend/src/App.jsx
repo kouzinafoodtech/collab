@@ -1900,6 +1900,8 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
   const [body, setBody] = useState("");
   const [priv, setPriv] = useState(false);
   const [error, setError] = useState("");
+  const [replyId, setReplyId] = useState(null); // message being replied to inline
+  const [replyText, setReplyText] = useState("");
 
   const load = useCallback(() => {
     authFetch(`/messages/conversation?email=${encodeURIComponent(person.email)}`)
@@ -1936,6 +1938,24 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
     load();
   }
 
+  // Reply in-thread: goes to this person, keeping the original's privacy.
+  async function sendReply(m) {
+    if (!replyText.trim()) return;
+    const res = await authFetch("/messages/send", {
+      method: "POST",
+      body: JSON.stringify({
+        recipient: person.email,
+        body: replyText.trim(),
+        private: !!m.is_private,
+      }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setReplyText("");
+      setReplyId(null);
+      load();
+    }
+  }
+
   const msgs = data.messages || [];
   const oweMe = msgs.filter((m) => m.owe_me); // they wrote, I owe a reply
   const oweThem = msgs.filter((m) => m.owe_them); // someone wrote, they owe a reply
@@ -1963,6 +1983,44 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
         </button>
       </div>
       <div className="conv-body">{m.body}</div>
+      {replyId === m.id ? (
+        <form
+          className="conv-reply-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            sendReply(m);
+          }}
+        >
+          <input
+            className="grow"
+            autoFocus
+            placeholder={`Reply to ${person.name}…${m.is_private ? " 🔒" : ""}`}
+            value={replyText}
+            onChange={(e) => setReplyText(e.target.value)}
+          />
+          <button type="submit">Reply</button>
+          <button
+            type="button"
+            className="link"
+            onClick={() => {
+              setReplyId(null);
+              setReplyText("");
+            }}
+          >
+            cancel
+          </button>
+        </form>
+      ) : (
+        <button
+          className="link conv-reply-link"
+          onClick={() => {
+            setReplyId(m.id);
+            setReplyText("");
+          }}
+        >
+          ↳ reply
+        </button>
+      )}
     </div>
   );
 

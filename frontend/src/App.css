@@ -605,6 +605,24 @@ button.link {
   word-break: break-word;
 }
 
+.conv-reply-link {
+  margin-top: 6px;
+  font-weight: 700;
+  font-size: 0.78rem;
+}
+
+.conv-reply-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.conv-reply-form input {
+  min-width: 160px;
+}
+
 .chip-toggle {
   white-space: nowrap;
   background: #fff;
