@@ -2286,6 +2286,16 @@ function Adoption({ adoption }) {
 const PAGE_FIRST = 10;
 const PAGE_MORE = 20;
 
+// Source filter for the feed. null = the curated all-sources view.
+const PORTAL_TABS = [
+  [null, "All"],
+  ["PK", "PK"],
+  ["KAC", "KAC"],
+  ["FIN", "Finance"],
+  ["LAUNCH", "Launch"],
+  ["LIVE", "Live"],
+];
+
 function Feed({ authFetch, actor, onActor }) {
   const [top, setTop] = useState([]);
   const [older, setOlder] = useState([]);
@@ -2297,13 +2307,23 @@ function Feed({ authFetch, actor, onActor }) {
   const [openComments, setOpenComments] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [portal, setPortal] = useState(null); // null = all sources
 
   const actorQS = actor ? `&actor=${encodeURIComponent(actor)}` : "";
+  const portalQS = portal ? `&portal=${portal}` : "";
+
+  function changePortal(p) {
+    if (p === portal) return;
+    setPortal(p);
+    setOlder([]);
+    setCursor(null);
+    setHasMore(false);
+  }
 
   const load = useCallback(
     (manual = false) => {
       if (manual) setRefreshing(true);
-      authFetch(`/feed?limit=${PAGE_FIRST}${actorQS}`)
+      authFetch(`/feed?limit=${PAGE_FIRST}${actorQS}${portalQS}`)
         .then((r) => r.json())
         .then((data) => {
           setTop(data.events);
@@ -2325,7 +2345,7 @@ function Feed({ authFetch, actor, onActor }) {
         .finally(() => setRefreshing(false));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [actorQS]
+    [actorQS, portalQS]
   );
 
   async function loadOlder() {
@@ -2335,7 +2355,7 @@ function Feed({ authFetch, actor, onActor }) {
       const res = await authFetch(
         `/feed?limit=${PAGE_MORE}&cursor_ts=${encodeURIComponent(
           cursor.ts
-        )}&cursor_id=${cursor.id}${actorQS}`
+        )}&cursor_id=${cursor.id}${actorQS}${portalQS}`
       );
       const data = await res.json();
       setOlder((cur) => [...cur, ...data.events]);
@@ -2392,6 +2412,17 @@ function Feed({ authFetch, actor, onActor }) {
 
   return (
     <main className="feed">
+      <div className="feed-portals">
+        {PORTAL_TABS.map(([val, label]) => (
+          <button
+            key={label}
+            className={`chip-toggle ${portal === val ? "on" : ""}`}
+            onClick={() => changePortal(val)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="feed-bar">
         <span className="feed-updated">
           {updatedAt

@@ -889,6 +889,18 @@ button.link {
   padding: 2px 4px;
 }
 
+.feed-portals {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 4px 8px;
+}
+
+.feed-portals .chip-toggle {
+  padding: 5px 12px;
+  font-size: 0.8rem;
+}
+
 .feed-updated {
   font-size: 0.78rem;
   color: var(--muted);
