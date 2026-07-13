@@ -1643,56 +1643,60 @@ def send_message(body: MessageIn, admin: dict = Depends(current_admin)):
 # read straight from pkdb. Add a rule by appending an entry here.
 
 REDFLAG_WINDOW_DAYS = 45
-
-# ETA for a CoCo PO: Sedna's ETA from the pushed tracking JSON when present,
-# else the order's own expected delivery date (for non-Sedna vendors).
-_COCO_ETA = (
-    "COALESCE(STR_TO_DATE(JSON_UNQUOTE(JSON_EXTRACT(po.sedna_tracking_data,'$.eta')),"
-    "'%Y-%m-%d'), DATE(io.expected_delivery_date))"
-)
+COCO_GRN_SLA_DAYS = 3   # GRN should be closed within 3 days of goods moving
 
 
 def _compute_coco_grn(conn, now: datetime) -> list[dict]:
-    """CoCo GRN overdue at the PURCHASE-ORDER grain (matches PartnerKart's PO
-    screen): POs not yet received whose delivery ETA has passed. Carries the
-    PO number, order id, Sedna SO id, vendor and ETA so the numbers match PK."""
+    """CoCo GRN overdue — the real thing per PK's model: the ORDER's goods have
+    actually moved (dispatched / delivered / invoiced) but grn_completed_at is
+    still NULL beyond the SLA. Orders merely 'approved' (not yet delivered) are
+    a vendor-delivery delay, NOT a GRN delay, so they're excluded. The overdue
+    clock runs from when goods moved (updated_at), not the ETA. Sub-order id,
+    PO number and Sedna SO id are carried through for reconciliation with PK."""
     sql = (
-        "SELECT po.po_number, po.order_id, v.name AS vendor, "
+        "SELECT io.id AS order_id, io.status AS state, io.updated_at AS since, "
         "k.name AS kitchen, k.email AS kitchen_email, "
-        "JSON_UNQUOTE(JSON_EXTRACT(po.sedna_tracking_data,'$.id')) AS so_id, "
-        f"{_COCO_ETA} AS eta, DATEDIFF(CURDATE(), {_COCO_ETA}) AS days_overdue, "
-        "po.status AS po_status "
-        "FROM pkdb.coco_purchase_orders po "
-        "JOIN pkdb.internal_orders io ON io.id = po.order_id "
-        "LEFT JOIN pkdb.vendors v ON v.id = po.vendor_id "
+        "MAX(po.po_number) AS po_number, "
+        "MAX(JSON_UNQUOTE(JSON_EXTRACT(po.sedna_tracking_data,'$.id'))) AS so_id, "
+        "MAX(pv.name) AS vendor "
+        "FROM pkdb.internal_orders io "
         "LEFT JOIN pkdb.coco_kitchens k ON k.id = io.kitchen_id "
-        "WHERE po.received_at IS NULL "
-        "AND (po.status IS NULL OR po.status NOT IN ('CANCELLED','CLOSED')) "
-        f"AND {_COCO_ETA} < CURDATE() "
-        "AND po.created_at >= :window "
-        f"ORDER BY k.name ASC, {_COCO_ETA} DESC, po.id DESC LIMIT 600"
+        "LEFT JOIN pkdb.coco_purchase_orders po ON po.order_id = io.id "
+        "LEFT JOIN pkdb.vendors pv ON pv.id = po.vendor_id "
+        "WHERE io.grn_completed_at IS NULL "
+        "AND (io.status IN ('dispatched','delivered','invoiced') OR io.pkg_status = 'invoiced') "
+        "AND io.updated_at < :cutoff AND io.created_at >= :window "
+        "GROUP BY io.id, io.status, io.updated_at, k.name, k.email "
+        "ORDER BY k.name ASC, io.updated_at ASC LIMIT 600"
     )
     try:
         rows = conn.execute(
-            text(sql), {"window": now - timedelta(days=REDFLAG_WINDOW_DAYS)}
+            text(sql),
+            {
+                "cutoff": now - timedelta(days=COCO_GRN_SLA_DAYS),
+                "window": now - timedelta(days=REDFLAG_WINDOW_DAYS),
+            },
         ).mappings().all()
     except Exception:
         return []
-    return [
-        {
-            "entity": r["kitchen"] or "—",
-            "contact_email": (r["kitchen_email"] or "").strip(),
-            "po_number": r["po_number"],
-            "order_id": r["order_id"],
-            "so_id": r["so_id"],
-            "vendor": (r["vendor"] or "").strip() or None,
-            "eta": r["eta"],
-            "days_overdue": int(r["days_overdue"] or 0),
-            "state": r["po_status"],
-            "ref": r["order_id"],
-        }
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        days = max(0, (now - r["since"]).days - COCO_GRN_SLA_DAYS) if r["since"] else 0
+        out.append(
+            {
+                "entity": r["kitchen"] or "—",
+                "contact_email": (r["kitchen_email"] or "").strip(),
+                "po_number": r["po_number"],
+                "order_id": r["order_id"],
+                "so_id": r["so_id"],
+                "vendor": (r["vendor"] or "").strip() or None,
+                "eta": None,
+                "days_overdue": days,
+                "state": r["state"],
+                "ref": r["order_id"],
+            }
+        )
+    return out
 
 
 PARTNER_GRN_MAX_DAYS = 30   # ignore orders overdue more than a month — no point
@@ -1871,11 +1875,11 @@ def _compute_delhi_grn(conn, now: datetime) -> list[dict]:
 REDFLAG_RULES = [
     {
         "key": "coco_grn",
-        "label": "CoCo orders — GRN overdue (past ETA)",
+        "label": "CoCo orders — GRN overdue (delivered, not GRN'd)",
         "ref_label": "CoCo order",
         "party_label": "Kitchen",
         "group_by_kitchen": True,
-        "note": "POs not received, past their delivery ETA",
+        "note": "Goods dispatched/delivered, GRN pending beyond 3 days",
         "compute": _compute_coco_grn,
     },
     {
@@ -1902,11 +1906,11 @@ REDFLAG_RULES = [
 # {category} are substituted at send time.
 DEFAULT_TEMPLATES = {
     "coco_grn": {
-        "subject": "GRN pending — CoCo orders past ETA",
+        "subject": "GRN pending — CoCo orders",
         "body": (
             "Team,\n\n"
-            "The following CoCo orders have not been received and are past their "
-            "delivery ETA. GRN is still pending:\n\n{orders}\n\n"
+            "The following CoCo orders have been delivered but the GRN is still "
+            "pending beyond the 3-day SLA:\n\n{orders}\n\n"
             "Please complete the GRN by {due_date}.\n\n"
             "— Kouzina Live"
         ),
