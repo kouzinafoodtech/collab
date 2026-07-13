@@ -1878,6 +1878,64 @@ def _compute_delhi_grn(conn, now: datetime) -> list[dict]:
     return out
 
 
+# ---- Kitchen launch (KLM / wodb1) --------------------------------------------
+LAUNCH_OB_REMIND_DAYS = 10    # team reminds from day 10
+LAUNCH_OB_DEADLINE_DAYS = 15  # onboarding deadline: 15 days from Aggregator OB
+
+
+def _compute_launch_ob(conn, now: datetime) -> list[dict]:
+    """Kitchen-launch onboarding SLA (KLM). Once 'Aggregator Onboarding' is
+    completed, onboarding has a 15-day deadline (reminders from day 10). Flags
+    launches still not live 10+ days on; RED once past the 15-day deadline.
+    Grouped by launch manager so the laggards are obvious. Reads wodb1 — if the
+    app's DB user lacks that grant the rule just returns empty (no crash)."""
+    sql = (
+        "SELECT agg.project_id AS ref, "
+        "COALESCE(NULLIF(MAX(l.launch_manager),'None'),'Unassigned') AS manager, "
+        "MAX(l.kac_name) AS kac_name, MAX(l.current_status) AS cur_status, "
+        "MAX(agg.completed_at) AS ob_at, "
+        "DATEDIFF(NOW(), MAX(agg.completed_at)) AS days_since, "
+        "DATE_ADD(DATE(MAX(agg.completed_at)), INTERVAL :ddl DAY) AS deadline "
+        "FROM wodb1.pk_milestone agg "
+        "JOIN wodb1.pk_launch l ON l.id = agg.project_id "
+        "WHERE agg.milestone_name IN ('Step 6: Aggregator Onboarding','OB request sent to aggregators') "
+        "AND agg.status = 'completed' AND agg.completed_at >= (NOW() - INTERVAL 60 DAY) "
+        "AND l.launch_completed_date IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM wodb1.pk_milestone d WHERE d.project_id = agg.project_id "
+        "  AND d.milestone_name IN ('Step 13: Take Kitchen Live','Launch') AND d.status = 'completed') "
+        "GROUP BY agg.project_id "
+        "HAVING days_since >= :remind "
+        "ORDER BY days_since DESC LIMIT 400"
+    )
+    try:
+        rows = conn.execute(
+            text(sql),
+            {"ddl": LAUNCH_OB_DEADLINE_DAYS, "remind": LAUNCH_OB_REMIND_DAYS},
+        ).mappings().all()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        ds = int(r["days_since"] or 0)
+        out.append(
+            {
+                "entity": r["manager"] or "Unassigned",
+                "contact_email": "",
+                "po_number": None,
+                "order_id": None,
+                "so_id": None,
+                "ident": r["kac_name"] or f"Launch #{r['ref']}",
+                "vendor": None,
+                "eta": r["deadline"],  # the 15-day deadline
+                "days_overdue": max(0, ds - LAUNCH_OB_DEADLINE_DAYS),
+                "red": ds >= LAUNCH_OB_DEADLINE_DAYS,
+                "state": r["cur_status"] or "onboarding",
+                "ref": r["ref"],
+            }
+        )
+    return out
+
+
 REDFLAG_RULES = [
     {
         "key": "coco_grn",
@@ -1906,6 +1964,16 @@ REDFLAG_RULES = [
         "group_by_kitchen": True,
         "note": "Last 7 days: GRN pending (>2d) or received but no bill uploaded",
         "compute": _compute_delhi_grn,
+    },
+    {
+        "key": "launch_ob",
+        "label": "Kitchen launch — onboarding overdue (15d from Aggregator OB)",
+        "ref_label": "Launch",
+        "party_label": "Launch manager",
+        "group_by_kitchen": True,
+        "count_red_only": True,
+        "note": "Aggregator OB done, kitchen not live. Red = past the 15-day deadline; rest in the reminder window (from day 10). By launch manager.",
+        "compute": _compute_launch_ob,
     },
 ]
 
@@ -1941,6 +2009,16 @@ DEFAULT_TEMPLATES = {
             "The following Delhi orders need attention — either the GRN is not "
             "done, or it is done but the bill has not been uploaded:\n\n{orders}\n\n"
             "Please complete the GRN and upload the bills by {due_date}.\n\n"
+            "— Kouzina Live"
+        ),
+    },
+    "launch_ob": {
+        "subject": "Kitchen launch onboarding overdue",
+        "body": (
+            "Team,\n\n"
+            "The following kitchen launches are past the onboarding deadline "
+            "(15 days from Aggregator Onboarding) and are not yet live:\n\n{orders}\n\n"
+            "Please push these to go-live by {due_date}.\n\n"
             "— Kouzina Live"
         ),
     },
@@ -2102,10 +2180,19 @@ def redflags(admin: dict = Depends(current_admin)):
              "days_overdue": 2, "ref": 90102,
              "items": [{"name": "GAS CYLINDER (19 KGS)", "ordered": 2, "received": 2, "amount": 1800}]},
         ]
+        launch_demo = [
+            {"entity": "Satyam", "contact_email": "", "ident": "RF-UP-LKO-ALIGANJ0-1",
+             "eta": (now - timedelta(days=5)).date(), "days_overdue": 5, "red": True,
+             "state": "WIP", "ref": 415},
+            {"entity": "Satyam", "contact_email": "", "ident": "RX-KA-BNG-RICHESGA-1",
+             "eta": (now + timedelta(days=2)).date(), "days_overdue": 0, "red": False,
+             "state": "onboarding", "ref": 421},
+        ]
         rules_out = [
             _rule_out(REDFLAG_RULES[0], coco_demo),
             _rule_out(REDFLAG_RULES[1], partner_demo),
             _rule_out(REDFLAG_RULES[2], delhi_demo),
+            _rule_out(REDFLAG_RULES[3], launch_demo),
         ]
         total = sum(r["count"] for r in rules_out)
     data = {
