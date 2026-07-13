@@ -459,6 +459,132 @@ button.link {
   color: var(--brand);
 }
 
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
+/* ---- Conversation (inbox thread) ---- */
+.conv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 2px 2px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.conv-back {
+  font-weight: 700;
+}
+
+.conv-name {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  cursor: pointer;
+  color: #182026;
+}
+
+.conv-name:hover {
+  filter: none;
+  text-decoration: underline;
+}
+
+.conv-wait-count {
+  background: #ef4444;
+  color: #fff;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.conv-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.conv-section-title {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.conv-waiting .conv-section-title {
+  color: #b91c1c;
+}
+
+.conv-msg {
+  max-width: 82%;
+  border-radius: 12px;
+  padding: 9px 12px;
+  background: #f1f5f9;
+  border: 1px solid var(--line);
+}
+
+.conv-msg.mine {
+  align-self: flex-end;
+  background: #eef2ff;
+  border-color: #d7defc;
+}
+
+.conv-msg.theirs {
+  align-self: flex-start;
+}
+
+.conv-msg.is-waiting {
+  border-left: 4px solid #ef4444;
+  background: #fff5f5;
+}
+
+.conv-waiting .conv-msg {
+  align-self: stretch;
+  max-width: 100%;
+  border-left: 4px solid #ef4444;
+  background: #fff5f5;
+}
+
+.conv-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  margin-bottom: 3px;
+}
+
+.conv-msg-head .wall-time {
+  color: var(--muted);
+}
+
+.conv-msg-head .react.xs {
+  margin-left: auto;
+}
+
+.conv-body {
+  font-size: 0.92rem;
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .chip-toggle {
   white-space: nowrap;
   background: #fff;

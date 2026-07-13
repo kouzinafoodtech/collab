@@ -1164,6 +1164,35 @@ def messages_private(admin: dict = Depends(current_admin)):
         return _serialize_msgs(db, rows, me_email)
 
 
+@api.get("/messages/conversation")
+def messages_conversation(email: str, admin: dict = Depends(current_admin)):
+    """The full 1:1 conversation with one person — every message directed
+    between me and them, public and private, so the inbox can open a real
+    thread. Newest first. Includes a `waiting` count: their messages that
+    are newer than my last reply (i.e. still on me to answer)."""
+    me_email = admin["email"]
+    other = (email or "").strip()
+    with SessionLocal() as db:
+        rows = (
+            db.query(MessageRow)
+            .filter(
+                or_(
+                    and_(MessageRow.sender == me_email, MessageRow.recipient == other),
+                    and_(MessageRow.sender == other, MessageRow.recipient == me_email),
+                )
+            )
+            .order_by(MessageRow.id.desc())
+            .limit(300)
+            .all()
+        )
+        msgs = _serialize_msgs(db, rows, me_email)
+    my_last = max((m["id"] for m in msgs if m["sender"] == me_email), default=0)
+    waiting = sum(1 for m in msgs if m["sender"] == other and m["id"] > my_last)
+    for m in msgs:
+        m["waiting"] = m["sender"] == other and m["id"] > my_last
+    return {"messages": msgs, "waiting": waiting, "my_last_id": my_last}
+
+
 @api.post("/messages/{message_id}/like")
 def toggle_message_like(message_id: int, admin: dict = Depends(current_admin)):
     with SessionLocal() as db:

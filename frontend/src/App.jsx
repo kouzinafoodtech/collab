@@ -331,6 +331,9 @@ function Shell({ me, authFetch, logout }) {
             onClick={() => setView("messages")}
           >
             Messages
+            {overview.messages_waiting_total > 0 && (
+              <span className="tab-badge">{overview.messages_waiting_total}</span>
+            )}
           </button>
           {isSuper && (
             <button
@@ -461,16 +464,24 @@ function Shell({ me, authFetch, logout }) {
         <Programs admins={admins} authFetch={authFetch} />
       )}
       {view === "feedback" && <Feedback authFetch={authFetch} />}
-      {view === "messages" && (
-        <MessagesHub
-          me={me}
-          admins={admins}
-          authFetch={authFetch}
-          onActor={openActor}
-          focus={msgFocus}
-          onFocusUsed={() => setMsgFocus(null)}
-        />
-      )}
+      {view === "messages" &&
+        (msgFocus && msgFocus.email ? (
+          <ConversationView
+            me={me}
+            person={msgFocus}
+            authFetch={authFetch}
+            onBack={() => setMsgFocus(null)}
+            onActor={openActor}
+          />
+        ) : (
+          <MessagesHub
+            me={me}
+            admins={admins}
+            authFetch={authFetch}
+            onActor={openActor}
+            onOpenPerson={openMessages}
+          />
+        ))}
       {view === "dash" && <Dashboard authFetch={authFetch} />}
     </div>
   );
@@ -1882,7 +1893,140 @@ function Wall({ email, name, authFetch, readOnly = false }) {
 
 const MSG_PAGE = 15;
 
-function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
+// A real 1:1 conversation (inbox thread): their unanswered messages up top,
+// then the public thread, then the private thread — with a reply box.
+function ConversationView({ me, person, authFetch, onBack, onActor }) {
+  const [data, setData] = useState({ messages: [], waiting: 0 });
+  const [body, setBody] = useState("");
+  const [priv, setPriv] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => {
+    authFetch(`/messages/conversation?email=${encodeURIComponent(person.email)}`)
+      .then((r) => r.json())
+      .then((d) => setData(d && d.messages ? d : { messages: [], waiting: 0 }))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [person.email]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 10000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function send(e) {
+    e.preventDefault();
+    setError("");
+    if (!body.trim()) return;
+    const res = await authFetch("/messages/send", {
+      method: "POST",
+      body: JSON.stringify({ recipient: person.email, body: body.trim(), private: priv }),
+    }).catch(() => null);
+    if (!res || !res.ok) {
+      setError("Failed to send");
+      return;
+    }
+    setBody("");
+    load();
+  }
+
+  async function toggleLike(id) {
+    await authFetch(`/messages/${id}/like`, { method: "POST" }).catch(() => {});
+    load();
+  }
+
+  const msgs = data.messages || [];
+  const waitingMsgs = msgs.filter((m) => m.waiting);
+  const pub = msgs.filter((m) => !m.is_private && !m.waiting);
+  const prv = msgs.filter((m) => m.is_private && !m.waiting);
+
+  const line = (m, pinned) => (
+    <div
+      key={`${pinned ? "w" : "m"}-${m.id}`}
+      className={`conv-msg ${m.sender === me.email ? "mine" : "theirs"} ${
+        m.waiting && !pinned ? "is-waiting" : ""
+      }`}
+    >
+      <div className="conv-msg-head">
+        <strong style={{ color: actorColor(m.sender_name) }}>
+          {m.sender === me.email ? "You" : m.sender_name}
+        </strong>
+        {m.is_private && <span className="lock">🔒</span>}
+        <span className="wall-time">{timeAgo(m.created_at)}</span>
+        <button
+          className={`react xs ${m.liked_by_me ? "liked" : ""}`}
+          onClick={() => toggleLike(m.id)}
+        >
+          {m.liked_by_me ? "♥" : "♡"} {m.like_count || ""}
+        </button>
+      </div>
+      <div className="conv-body">{m.body}</div>
+    </div>
+  );
+
+  return (
+    <main className="hub conv">
+      <div className="conv-head">
+        <button className="link conv-back" onClick={onBack}>
+          ← Inbox
+        </button>
+        <span className="avatar sm" style={{ background: actorColor(person.name) }}>
+          {initials(person.name)}
+        </span>
+        <button className="conv-name" onClick={() => onActor(person.name)}>
+          {person.name}
+        </button>
+        {data.waiting > 0 && (
+          <span className="conv-wait-count">{data.waiting} waiting</span>
+        )}
+      </div>
+
+      <form className="card composer-card" onSubmit={send}>
+        <input
+          className="grow"
+          autoFocus
+          placeholder={`Message ${person.name}…`}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        <label className="priv-toggle" title="Send privately">
+          <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} />
+          🔒
+        </label>
+        <button type="submit">Send</button>
+      </form>
+      {error && <p className="error">{error}</p>}
+
+      {waitingMsgs.length > 0 && (
+        <div className="conv-section conv-waiting">
+          <div className="conv-section-title">⏳ Waiting on your reply</div>
+          {waitingMsgs.map((m) => line(m, true))}
+        </div>
+      )}
+
+      {pub.length > 0 && (
+        <div className="conv-section">
+          <div className="conv-section-title">Messages</div>
+          {pub.map((m) => line(m, false))}
+        </div>
+      )}
+
+      {prv.length > 0 && (
+        <div className="conv-section">
+          <div className="conv-section-title">🔒 Private</div>
+          {prv.map((m) => line(m, false))}
+        </div>
+      )}
+
+      {msgs.length === 0 && (
+        <div className="empty big">No messages with {person.name} yet — say hi 👋</div>
+      )}
+    </main>
+  );
+}
+
+function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
   const [sub, setSub] = useState("all"); // all | private
   const [msgs, setMsgs] = useState([]);
   const [recipient, setRecipient] = useState("");
@@ -1895,20 +2039,6 @@ function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
   const [mineOnly, setMineOnly] = useState(false);
   const [openThreads, setOpenThreads] = useState({}); // rootId -> bool
   const [shown, setShown] = useState(MSG_PAGE);
-
-  // Jumped in from the dashboard: open the private thread with that person.
-  // When the focus clears (e.g. "Open messages"), drop the filter again.
-  useEffect(() => {
-    if (focus && focus.email) {
-      setSub("private");
-      setQuery(focus.name || "");
-      setRecipient(focus.email);
-      setPriv(true);
-    } else {
-      setQuery("");
-      setRecipient("");
-    }
-  }, [focus]);
 
   // Reset paging whenever the visible set changes.
   useEffect(() => setShown(MSG_PAGE), [sub, query, mineOnly]);
@@ -1926,12 +2056,6 @@ function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
     const t = setInterval(load, 10000);
     return () => clearInterval(t);
   }, [load]);
-
-  function clearFocus() {
-    setQuery("");
-    setRecipient("");
-    if (onFocusUsed) onFocusUsed();
-  }
 
   async function send(e) {
     e.preventDefault();
@@ -2015,12 +2139,16 @@ function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
       return true;
     });
 
-  const NameLink = ({ name }) => (
+  const NameLink = ({ name, email }) => (
     <button
       className="msg-name-link"
       style={{ color: actorColor(name) }}
-      onClick={() => onActor(name)}
-      title={`Open ${name}`}
+      onClick={() =>
+        email && email !== me.email && onOpenPerson
+          ? onOpenPerson({ email, name })
+          : onActor(name)
+      }
+      title={`Open conversation with ${name}`}
     >
       {name}
     </button>
@@ -2042,17 +2170,6 @@ function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
           🔒 Private
         </button>
       </div>
-
-      {focus && focus.email && (
-        <div className="msg-focus-bar">
-          <span>
-            💬 Conversation with <strong>{focus.name}</strong>
-          </span>
-          <button className="link" onClick={clearFocus}>
-            ✕ show all
-          </button>
-        </div>
-      )}
 
       <div className="msg-filter">
         <input
@@ -2115,9 +2232,9 @@ function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
                   borderLeftColor: actorColor(m.sender_name),
                 }}
               >
-                <NameLink name={m.sender_name} />
+                <NameLink name={m.sender_name} email={m.sender} />
                 <span className="to-chip">
-                  → <NameLink name={m.recipient_name} />
+                  → <NameLink name={m.recipient_name} email={m.recipient} />
                 </span>
                 {m.is_private && <span className="lock">🔒</span>}
                 <span className="wall-body">{m.body}</span>
@@ -2148,7 +2265,7 @@ function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
                     className="wall-msg reply"
                     style={{ borderLeftColor: actorColor(c.sender_name) }}
                   >
-                    <NameLink name={c.sender_name} />
+                    <NameLink name={c.sender_name} email={c.sender} />
                     <span className="wall-body">{c.body}</span>
                     <span className="wall-time">{timeAgo(c.created_at)}</span>
                     <button
