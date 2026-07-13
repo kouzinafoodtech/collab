@@ -20,6 +20,19 @@ function fmtDate(d) {
   return dt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+function etaLabel(eta) {
+  if (!eta) return "no ETA";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(eta));
+  const dt = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(eta);
+  if (isNaN(dt)) return "no ETA";
+  const today = new Date(new Date().toDateString());
+  const d = Math.round((dt - today) / 86400000);
+  if (d > 1) return `ETA in ${d}d`;
+  if (d === 1) return "ETA tomorrow";
+  if (d === 0) return "ETA today";
+  return `${-d}d past ETA`;
+}
+
 function timeAgo(iso) {
   const then = new Date(iso).getTime();
   const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
@@ -717,8 +730,9 @@ function RedFlags({ data, admins, authFetch }) {
           if (f.so_id) ids.push(`SO ${f.so_id}`);
           if (f.ident) ids.push(f.ident);
           const itemsOpen = openItems[fid];
+          const soft = f.red === false; // shown for context, not a red flag
           return (
-            <div key={fid} className="rf-item">
+            <div key={fid} className={`rf-item ${soft ? "rf-item-soft" : ""}`}>
               <div className="rf-row">
                 {showEntity && <strong className="rf-entity">{f.entity}</strong>}
                 <span className="rf-ids">
@@ -729,10 +743,16 @@ function RedFlags({ data, admins, authFetch }) {
                 {f.amount != null && (
                   <span className="rf-amount">₹{Math.round(f.amount).toLocaleString("en-IN")}</span>
                 )}
-                <span className="rf-over">{f.days_overdue}d</span>
+                {soft ? (
+                  <span className="rf-eta-soft">{etaLabel(f.eta)}</span>
+                ) : (
+                  <span className="rf-over">
+                    {f.eta ? `${f.days_overdue}d past ETA` : `${f.days_overdue}d`}
+                  </span>
+                )}
               </div>
               <div className="rf-sub muted">
-                {f.eta ? `ETA ${fmtDate(f.eta)}` : null}
+                {soft && f.eta ? `ETA ${fmtDate(f.eta)}` : null}
                 {f.items?.length > 0 && (
                   <button className="link rf-items-link" onClick={() => toggleItems(fid)}>
                     {itemsOpen ? "▾" : "▸"} {f.items.length} item
@@ -819,7 +839,9 @@ function RedFlags({ data, admins, authFetch }) {
               <div className="rf-group-body">
                 <div className="muted rf-note">
                   {rule.note || `Last ${rule.window_days} days.`}
-                  {rule.grouped && rule.count > 0 && " Grouped by kitchen."}
+                  {rule.red_only && rule.pending != null && (
+                    <> · <strong>{rule.count}</strong> red of {rule.pending} pending</>
+                  )}
                 </div>
                 {rule.grouped
                   ? (rule.subgroups || []).map((g) => {
@@ -834,7 +856,20 @@ function RedFlags({ data, admins, authFetch }) {
                             <span className={`rf-caret ${kOpen ? "down" : ""}`}>▸</span>
                             <span className="rf-tree-icon">🏢</span>
                             <strong className="rf-entity">{g.entity}</strong>
-                            <span className="rf-count">{g.count}</span>
+                            {rule.red_only ? (
+                              g.red > 0 ? (
+                                <>
+                                  <span className="rf-count">{g.red}</span>
+                                  {g.count > g.red && (
+                                    <span className="rf-sg-total">of {g.count}</span>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="rf-sg-total">{g.count} pending</span>
+                              )
+                            ) : (
+                              <span className="rf-count">{g.count}</span>
+                            )}
                             {g.email && (
                               <span className="muted rf-sg-email">{g.email}</span>
                             )}
@@ -911,7 +946,10 @@ function ReminderModal({ rule, template, admins, authFetch, emailEnabled, onClos
     month: "short",
     year: "numeric",
   });
-  const ordersPreview = rule.flags
+  const reminderFlags = rule.red_only
+    ? rule.flags.filter((f) => f.red)
+    : rule.flags;
+  const ordersPreview = reminderFlags
     .slice(0, 5)
     .map((f) => {
       const ids = [];

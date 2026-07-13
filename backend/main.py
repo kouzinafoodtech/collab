@@ -1643,18 +1643,23 @@ def send_message(body: MessageIn, admin: dict = Depends(current_admin)):
 # read straight from pkdb. Add a rule by appending an entry here.
 
 REDFLAG_WINDOW_DAYS = 45
-COCO_GRN_SLA_DAYS = 3   # GRN should be closed within 3 days of goods moving
+COCO_GRN_ETA_BUFFER = 2   # red only once 2 days past the ETA
 
 
 def _compute_coco_grn(conn, now: datetime) -> list[dict]:
-    """CoCo GRN overdue — the real thing per PK's model: the ORDER's goods have
-    actually moved (dispatched / delivered / invoiced) but grn_completed_at is
-    still NULL beyond the SLA. Orders merely 'approved' (not yet delivered) are
-    a vendor-delivery delay, NOT a GRN delay, so they're excluded. The overdue
-    clock runs from when goods moved (updated_at), not the ETA. Sub-order id,
-    PO number and Sedna SO id are carried through for reconciliation with PK."""
+    """CoCo GRN — PK's Pending-GRN-by-Location model. The LIST is every order
+    still awaiting GRN (status approved/dispatched/invoiced/delivered,
+    grn_completed_at NULL, empty composite parents stripped). An order becomes a
+    RED FLAG only once it's 2+ days past its ETA (expected_delivery_date + 2d <
+    now) — anchoring on the ETA, not the delivered-status, so vendors who never
+    flip an order to 'delivered' are still caught (the ETA exists on approved
+    orders too). Sub-order id, PO number and Sedna SO id carried for PK reconcile."""
     sql = (
-        "SELECT io.id AS order_id, io.status AS state, io.updated_at AS since, "
+        "SELECT io.id AS order_id, io.status AS state, "
+        "io.expected_delivery_date AS eta, "
+        "DATEDIFF(CURDATE(), io.expected_delivery_date) AS days_past_eta, "
+        "(io.expected_delivery_date IS NOT NULL "
+        " AND DATE_ADD(io.expected_delivery_date, INTERVAL :buf DAY) < NOW()) AS is_red, "
         "k.name AS kitchen, k.email AS kitchen_email, "
         "MAX(po.po_number) AS po_number, "
         "MAX(JSON_UNQUOTE(JSON_EXTRACT(po.sedna_tracking_data,'$.id'))) AS so_id, "
@@ -1663,25 +1668,25 @@ def _compute_coco_grn(conn, now: datetime) -> list[dict]:
         "LEFT JOIN pkdb.coco_kitchens k ON k.id = io.kitchen_id "
         "LEFT JOIN pkdb.coco_purchase_orders po ON po.order_id = io.id "
         "LEFT JOIN pkdb.vendors pv ON pv.id = po.vendor_id "
-        "WHERE io.grn_completed_at IS NULL "
-        "AND (io.status IN ('dispatched','delivered','invoiced') OR io.pkg_status = 'invoiced') "
-        "AND io.updated_at < :cutoff AND io.created_at >= :window "
-        "GROUP BY io.id, io.status, io.updated_at, k.name, k.email "
-        "ORDER BY k.name ASC, io.updated_at ASC LIMIT 600"
+        "WHERE io.status IN ('approved','dispatched','invoiced','delivered') "
+        "AND io.grn_completed_at IS NULL "
+        "AND NOT (EXISTS (SELECT 1 FROM pkdb.internal_orders c WHERE c.parent_order_id = io.id) "
+        "         AND NOT EXISTS (SELECT 1 FROM pkdb.internal_order_items it WHERE it.order_id = io.id)) "
+        "AND io.created_at >= :window "
+        "GROUP BY io.id, io.status, io.expected_delivery_date, k.name, k.email "
+        "ORDER BY is_red DESC, days_past_eta DESC, k.name ASC LIMIT 800"
     )
     try:
         rows = conn.execute(
             text(sql),
-            {
-                "cutoff": now - timedelta(days=COCO_GRN_SLA_DAYS),
-                "window": now - timedelta(days=REDFLAG_WINDOW_DAYS),
-            },
+            {"buf": COCO_GRN_ETA_BUFFER, "window": now - timedelta(days=REDFLAG_WINDOW_DAYS)},
         ).mappings().all()
     except Exception:
         return []
     out = []
     for r in rows:
-        days = max(0, (now - r["since"]).days - COCO_GRN_SLA_DAYS) if r["since"] else 0
+        red = bool(r["is_red"])
+        dpe = r["days_past_eta"]
         out.append(
             {
                 "entity": r["kitchen"] or "—",
@@ -1690,8 +1695,9 @@ def _compute_coco_grn(conn, now: datetime) -> list[dict]:
                 "order_id": r["order_id"],
                 "so_id": r["so_id"],
                 "vendor": (r["vendor"] or "").strip() or None,
-                "eta": None,
-                "days_overdue": days,
+                "eta": r["eta"],
+                "days_overdue": max(0, int(dpe)) if (red and dpe is not None) else 0,
+                "red": red,
                 "state": r["state"],
                 "ref": r["order_id"],
             }
@@ -1875,11 +1881,12 @@ def _compute_delhi_grn(conn, now: datetime) -> list[dict]:
 REDFLAG_RULES = [
     {
         "key": "coco_grn",
-        "label": "CoCo orders — GRN overdue (delivered, not GRN'd)",
+        "label": "CoCo orders — GRN pending (red = 2d+ past ETA)",
         "ref_label": "CoCo order",
         "party_label": "Kitchen",
         "group_by_kitchen": True,
-        "note": "Goods dispatched/delivered, GRN pending beyond 3 days",
+        "count_red_only": True,
+        "note": "PK Pending-GRN by kitchen. Red = 2+ days past ETA; rest awaiting/on-time.",
         "compute": _compute_coco_grn,
     },
     {
@@ -1906,11 +1913,11 @@ REDFLAG_RULES = [
 # {category} are substituted at send time.
 DEFAULT_TEMPLATES = {
     "coco_grn": {
-        "subject": "GRN pending — CoCo orders",
+        "subject": "GRN pending — CoCo orders past ETA",
         "body": (
             "Team,\n\n"
-            "The following CoCo orders have been delivered but the GRN is still "
-            "pending beyond the 3-day SLA:\n\n{orders}\n\n"
+            "The following CoCo orders are 2+ days past their delivery ETA with "
+            "GRN still pending:\n\n{orders}\n\n"
             "Please complete the GRN by {due_date}.\n\n"
             "— Kouzina Live"
         ),
@@ -1961,6 +1968,7 @@ def _flag_json(f: dict) -> dict:
         "vendor": f.get("vendor"),
         "eta": eta_s,
         "days_overdue": int(f.get("days_overdue") or 0),
+        "red": f.get("red", True),  # False = shown for context, not a red flag
         # optional richer fields (Delhi orders): drill-down items, bill link, etc.
         "ident": f.get("ident"),
         "amount": f.get("amount"),
@@ -1978,13 +1986,15 @@ def _subgroups_from_flags(flags: list[dict]) -> list[dict]:
         g = by.setdefault(
             key,
             {"entity": key, "email": (f.get("contact_email") or "").strip(),
-             "count": 0, "flags": []},
+             "count": 0, "red": 0, "flags": []},
         )
         g["count"] += 1
+        if f.get("red", True):
+            g["red"] += 1
         g["flags"].append(_flag_json(f))
         if not g["email"] and f.get("contact_email"):
             g["email"] = f["contact_email"].strip()
-    return sorted(by.values(), key=lambda g: (-g["count"], g["entity"]))
+    return sorted(by.values(), key=lambda g: (-g["red"], -g["count"], g["entity"]))
 
 
 def _parties_from_flags(flags: list[dict]) -> list[dict]:
@@ -2030,6 +2040,11 @@ def redflags(admin: dict = Depends(current_admin)):
         return _redflag_cache["data"]
 
     def _rule_out(rule: dict, flags: list[dict]) -> dict:
+        # Some rules (CoCo) show a full pending LIST but only the red subset is
+        # a flag; the count + reminders track the red ones.
+        red_only = rule.get("count_red_only")
+        reds = [f for f in flags if f.get("red", True)]
+        count = len(reds) if red_only else len(flags)
         out = {
             "key": rule["key"],
             "label": rule["label"],
@@ -2038,8 +2053,10 @@ def redflags(admin: dict = Depends(current_admin)):
             "note": rule.get("note", ""),
             "window_days": REDFLAG_WINDOW_DAYS,
             "grouped": bool(rule.get("group_by_kitchen")),
-            "count": len(flags),
-            "parties": _parties_from_flags(flags),
+            "count": count,
+            "pending": len(flags),
+            "red_only": bool(red_only),
+            "parties": _parties_from_flags(reds if red_only else flags),
             "flags": [_flag_json(f) for f in flags],
         }
         if rule.get("group_by_kitchen"):
@@ -2051,19 +2068,23 @@ def redflags(admin: dict = Depends(current_admin)):
         with engine.connect() as conn:
             for rule in REDFLAG_RULES:
                 flags = rule["compute"](conn, now)
-                total += len(flags)
-                rules_out.append(_rule_out(rule, flags))
+                ro = _rule_out(rule, flags)
+                total += ro["count"]
+                rules_out.append(ro)
     else:  # local dev demo
         coco_demo = [
             {"entity": "E-CITY", "contact_email": "ecity@kftpl.com", "po_number": "COPO/26-27/0142",
              "order_id": 1988, "so_id": "SO26-AAJCK-001188", "vendor": "Sedna Retail",
-             "eta": (now - timedelta(days=2)).date(), "days_overdue": 2, "state": "OPEN", "ref": 1988},
+             "eta": (now - timedelta(days=4)).date(), "days_overdue": 4, "red": True,
+             "state": "invoiced", "ref": 1988},
             {"entity": "E-CITY", "contact_email": "ecity@kftpl.com", "po_number": "COPO/26-27/0151",
              "order_id": 2001, "so_id": None, "vendor": "Local Traders",
-             "eta": (now - timedelta(days=4)).date(), "days_overdue": 4, "state": "OPEN", "ref": 2001},
+             "eta": (now + timedelta(days=1)).date(), "days_overdue": 0, "red": False,
+             "state": "approved", "ref": 2001},
             {"entity": "KLP HSR", "contact_email": "klphsr@kftpl.com", "po_number": "COPO/26-27/0133",
              "order_id": 1777, "so_id": "SO26-AAJCK-001177", "vendor": "Sedna Retail",
-             "eta": (now - timedelta(days=6)).date(), "days_overdue": 6, "state": "OPEN", "ref": 1777},
+             "eta": (now - timedelta(days=6)).date(), "days_overdue": 6, "red": True,
+             "state": "dispatched", "ref": 1777},
         ]
         partner_demo = [
             {"entity": "HUNMONI DUTTA", "contact_email": "hunmoni@example.com", "po_number": None,
@@ -2086,7 +2107,7 @@ def redflags(admin: dict = Depends(current_admin)):
             _rule_out(REDFLAG_RULES[1], partner_demo),
             _rule_out(REDFLAG_RULES[2], delhi_demo),
         ]
-        total = len(coco_demo) + len(partner_demo) + len(delhi_demo)
+        total = sum(r["count"] for r in rules_out)
     data = {
         "total": total,
         "rules": rules_out,
@@ -2249,6 +2270,10 @@ def send_group_reminder(
     if IS_MYSQL:
         with engine.connect() as conn:
             flags = rule["compute"](conn, now)
+    # Red-only rules (CoCo) remind about the past-ETA orders, not the whole
+    # pending list that's shown for context.
+    if rule.get("count_red_only"):
+        flags = [f for f in flags if f.get("red", True)]
     who = admin.get("name") or admin["email"]
 
     def ctx_for(subset):
