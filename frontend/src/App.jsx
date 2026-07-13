@@ -211,6 +211,7 @@ function Shell({ me, authFetch, logout }) {
   const isSuper = (me.email || "").toLowerCase() === SUPERADMIN;
   const [view, setView] = useState("live"); // live | messages | dash
   const [person, setPerson] = useState(null); // {actor, email, count}
+  const [msgFocus, setMsgFocus] = useState(null); // {email, name} open a thread
   const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
@@ -255,6 +256,13 @@ function Shell({ me, authFetch, logout }) {
   function openPerson(p) {
     setPerson(p);
     setView("live");
+  }
+
+  // Open the Messages tab; with a person, jump straight into their thread.
+  function openMessages(personObj) {
+    setMsgFocus(personObj && personObj.email ? personObj : null);
+    setView("messages");
+    setPeopleOpen(false);
   }
 
   async function openActor(actor) {
@@ -400,10 +408,7 @@ function Shell({ me, authFetch, logout }) {
           <DashRail
             overview={overview}
             open={peopleOpen}
-            onOpenMessages={() => {
-              setView("messages");
-              setPeopleOpen(false);
-            }}
+            onOpenMessages={openMessages}
             onOpenFeedback={() => {
               setView("feedback");
               setPeopleOpen(false);
@@ -462,6 +467,8 @@ function Shell({ me, authFetch, logout }) {
           admins={admins}
           authFetch={authFetch}
           onActor={openActor}
+          focus={msgFocus}
+          onFocusUsed={() => setMsgFocus(null)}
         />
       )}
       {view === "dash" && <Dashboard authFetch={authFetch} />}
@@ -499,7 +506,11 @@ function DashRail({ overview, open, onOpenMessages, onOpenFeedback }) {
         </div>
         <div className="lb-list">
           {awaiting.map((p) => (
-            <button key={p.email} className="lb-item" onClick={onOpenMessages}>
+            <button
+              key={p.email}
+              className="lb-item"
+              onClick={() => onOpenMessages({ email: p.email, name: p.name })}
+            >
               <span className="avatar sm" style={{ background: actorColor(p.name) }}>
                 {initials(p.name)}
               </span>
@@ -524,7 +535,11 @@ function DashRail({ overview, open, onOpenMessages, onOpenFeedback }) {
         </div>
         <div className="lb-list">
           {waiting.map((w) => (
-            <button key={w.email} className="lb-item" onClick={onOpenMessages}>
+            <button
+              key={w.email}
+              className="lb-item"
+              onClick={() => onOpenMessages({ email: w.email, name: w.name })}
+            >
               <span className="avatar sm" style={{ background: actorColor(w.name) }}>
                 {initials(w.name)}
               </span>
@@ -536,7 +551,7 @@ function DashRail({ overview, open, onOpenMessages, onOpenFeedback }) {
             <div className="empty">You're all caught up 🎉</div>
           )}
         </div>
-        <button className="link lb-more" onClick={onOpenMessages}>
+        <button className="link lb-more" onClick={() => onOpenMessages()}>
           Open messages →
         </button>
       </div>
@@ -1865,7 +1880,9 @@ function Wall({ email, name, authFetch, readOnly = false }) {
 
 // ---- Messages hub ---------------------------------------------------------------
 
-function MessagesHub({ me, admins, authFetch, onActor }) {
+const MSG_PAGE = 15;
+
+function MessagesHub({ me, admins, authFetch, onActor, focus, onFocusUsed }) {
   const [sub, setSub] = useState("all"); // all | private
   const [msgs, setMsgs] = useState([]);
   const [recipient, setRecipient] = useState("");
@@ -1877,6 +1894,24 @@ function MessagesHub({ me, admins, authFetch, onActor }) {
   const [query, setQuery] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
   const [openThreads, setOpenThreads] = useState({}); // rootId -> bool
+  const [shown, setShown] = useState(MSG_PAGE);
+
+  // Jumped in from the dashboard: open the private thread with that person.
+  // When the focus clears (e.g. "Open messages"), drop the filter again.
+  useEffect(() => {
+    if (focus && focus.email) {
+      setSub("private");
+      setQuery(focus.name || "");
+      setRecipient(focus.email);
+      setPriv(true);
+    } else {
+      setQuery("");
+      setRecipient("");
+    }
+  }, [focus]);
+
+  // Reset paging whenever the visible set changes.
+  useEffect(() => setShown(MSG_PAGE), [sub, query, mineOnly]);
 
   const load = useCallback(() => {
     authFetch(sub === "all" ? "/messages/public" : "/messages/private")
@@ -1891,6 +1926,12 @@ function MessagesHub({ me, admins, authFetch, onActor }) {
     const t = setInterval(load, 10000);
     return () => clearInterval(t);
   }, [load]);
+
+  function clearFocus() {
+    setQuery("");
+    setRecipient("");
+    if (onFocusUsed) onFocusUsed();
+  }
 
   async function send(e) {
     e.preventDefault();
@@ -2002,6 +2043,17 @@ function MessagesHub({ me, admins, authFetch, onActor }) {
         </button>
       </div>
 
+      {focus && focus.email && (
+        <div className="msg-focus-bar">
+          <span>
+            💬 Conversation with <strong>{focus.name}</strong>
+          </span>
+          <button className="link" onClick={clearFocus}>
+            ✕ show all
+          </button>
+        </div>
+      )}
+
       <div className="msg-filter">
         <input
           className="grow"
@@ -2051,7 +2103,7 @@ function MessagesHub({ me, admins, authFetch, onActor }) {
       {error && <p className="error">{error}</p>}
 
       <div className="thread-list">
-        {roots.map((m) => {
+        {roots.slice(0, shown).map((m) => {
           const replies = kids[m.id] || [];
           const showReplies = openThreads[m.id] || Boolean(q);
           return (
@@ -2141,6 +2193,14 @@ function MessagesHub({ me, admins, authFetch, onActor }) {
               ? "No private messages yet."
               : "No messages yet — start one above."}
           </div>
+        )}
+        {roots.length > shown && (
+          <button
+            className="load-older"
+            onClick={() => setShown((s) => s + MSG_PAGE)}
+          >
+            Load more ({roots.length - shown} older)
+          </button>
         )}
       </div>
     </main>

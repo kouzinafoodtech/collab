@@ -437,6 +437,26 @@ button.link {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.msg-filter .grow {
+  flex: 1;
+  min-width: 160px;
+}
+
+.msg-focus-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #eef2ff;
+  border: 1px solid #d7defc;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  color: var(--brand);
 }
 
 .chip-toggle {
