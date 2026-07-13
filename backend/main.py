@@ -1936,6 +1936,66 @@ def _compute_launch_ob(conn, now: datetime) -> list[dict]:
     return out
 
 
+LAUNCH_RM_CONFIRM_HRS = 24   # revenue team confirms date/time within 24h
+LAUNCH_RM_CALL_HRS = 48      # call taken within 48h of the request
+
+
+def _compute_launch_rm(conn, now: datetime) -> list[dict]:
+    """RM & Revenue Call SLA (KLM). From when the RM & Revenue Call request/email
+    is sent (pk_launch.rm_revenue_email), the revenue team confirms a date/time
+    within 24h and the call is taken within 48h. Flags launches past 24h whose
+    call isn't done; RED once past the 48h call window. NOTE: this stays empty
+    until KLM starts stamping rm_revenue_email when the request goes out (it is
+    not populated today — same family as onboarding_email_at)."""
+    sql = (
+        "SELECT l.id AS ref, "
+        "COALESCE(NULLIF(l.launch_manager,'None'),'Unassigned') AS manager, "
+        "l.kac_name, l.current_status, "
+        "TIMESTAMPDIFF(HOUR, l.rm_revenue_email, NOW()) AS hrs, "
+        "DATEDIFF(NOW(), l.rm_revenue_email) AS days_since, "
+        "DATE_ADD(DATE(l.rm_revenue_email), INTERVAL 2 DAY) AS deadline, "
+        "MAX(CASE WHEN m.milestone_name LIKE 'Step 14:%' THEN m.status END) AS rm_status, "
+        "MAX(CASE WHEN m.milestone_name LIKE 'Step 14:%' "
+        "  AND m.scheduled_datetime > '2000-01-01' THEN m.scheduled_datetime END) AS scheduled "
+        "FROM wodb1.pk_launch l "
+        "LEFT JOIN wodb1.pk_milestone m ON m.project_id = l.id "
+        "WHERE l.rm_revenue_email IS NOT NULL "
+        "AND l.rm_revenue_email >= (NOW() - INTERVAL 30 DAY) "
+        "AND l.launch_completed_date IS NULL "
+        "GROUP BY l.id, manager, l.kac_name, l.current_status, l.rm_revenue_email "
+        "HAVING (rm_status IS NULL OR rm_status <> 'completed') "
+        "AND TIMESTAMPDIFF(HOUR, l.rm_revenue_email, NOW()) >= :confirm "
+        "ORDER BY hrs DESC LIMIT 400"
+    )
+    try:
+        rows = conn.execute(text(sql), {"confirm": LAUNCH_RM_CONFIRM_HRS}).mappings().all()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        hrs = int(r["hrs"] or 0)
+        confirmed = r["scheduled"] is not None
+        red = hrs >= LAUNCH_RM_CALL_HRS
+        state = "call not taken" if confirmed else "date/time not confirmed"
+        out.append(
+            {
+                "entity": r["manager"] or "Unassigned",
+                "contact_email": "",
+                "po_number": None,
+                "order_id": None,
+                "so_id": None,
+                "ident": r["kac_name"] or f"Launch #{r['ref']}",
+                "vendor": None,
+                "eta": r["deadline"],  # 48h call deadline
+                "days_overdue": max(0, int(r["days_since"] or 0) - 2),
+                "red": red,
+                "state": state,
+                "ref": r["ref"],
+            }
+        )
+    return out
+
+
 REDFLAG_RULES = [
     {
         "key": "coco_grn",
@@ -1974,6 +2034,16 @@ REDFLAG_RULES = [
         "count_red_only": True,
         "note": "Aggregator OB done, kitchen not live. Red = past the 15-day deadline; rest in the reminder window (from day 10). By launch manager.",
         "compute": _compute_launch_ob,
+    },
+    {
+        "key": "launch_rm",
+        "label": "Kitchen launch — RM & Revenue Call overdue (24h confirm / 48h call)",
+        "ref_label": "Launch",
+        "party_label": "Launch manager",
+        "group_by_kitchen": True,
+        "count_red_only": True,
+        "note": "From RM & Revenue request: confirm date/time in 24h, take call in 48h. Red = past 48h. (Empty until KLM stamps rm_revenue_email.)",
+        "compute": _compute_launch_rm,
     },
 ]
 
@@ -2019,6 +2089,16 @@ DEFAULT_TEMPLATES = {
             "The following kitchen launches are past the onboarding deadline "
             "(15 days from Aggregator Onboarding) and are not yet live:\n\n{orders}\n\n"
             "Please push these to go-live by {due_date}.\n\n"
+            "— Kouzina Live"
+        ),
+    },
+    "launch_rm": {
+        "subject": "RM & Revenue Call overdue",
+        "body": (
+            "Team,\n\n"
+            "For the following launches the RM & Revenue Call is overdue "
+            "(date/time to be confirmed within 24h, call taken within 48h):\n\n{orders}\n\n"
+            "Please confirm and complete the call by {due_date}.\n\n"
             "— Kouzina Live"
         ),
     },
