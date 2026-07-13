@@ -1166,10 +1166,11 @@ def messages_private(admin: dict = Depends(current_admin)):
 
 @api.get("/messages/conversation")
 def messages_conversation(email: str, admin: dict = Depends(current_admin)):
-    """The full 1:1 conversation with one person — every message directed
-    between me and them, public and private, so the inbox can open a real
-    thread. Newest first. Includes a `waiting` count: their messages that
-    are newer than my last reply (i.e. still on me to answer)."""
+    """Everything about one person I'm allowed to see: my full thread with them
+    (public + private) PLUS the public chains they're part of. Each message is
+    tagged so the UI can show two things — what I owe THEM (`owe_me`) and what
+    THEY owe others (`owe_them`, the "not responded" chains). Private threads
+    between them and third parties stay hidden (I'm not a party)."""
     me_email = admin["email"]
     other = (email or "").strip()
     with SessionLocal() as db:
@@ -1177,20 +1178,40 @@ def messages_conversation(email: str, admin: dict = Depends(current_admin)):
             db.query(MessageRow)
             .filter(
                 or_(
+                    # my own thread with them — public + private
                     and_(MessageRow.sender == me_email, MessageRow.recipient == other),
                     and_(MessageRow.sender == other, MessageRow.recipient == me_email),
+                    # public messages they sent or received (visible to everyone)
+                    and_(
+                        MessageRow.is_private == 0,
+                        or_(MessageRow.sender == other, MessageRow.recipient == other),
+                    ),
                 )
             )
             .order_by(MessageRow.id.desc())
-            .limit(300)
+            .limit(400)
             .all()
         )
         msgs = _serialize_msgs(db, rows, me_email)
-    my_last = max((m["id"] for m in msgs if m["sender"] == me_email), default=0)
-    waiting = sum(1 for m in msgs if m["sender"] == other and m["id"] > my_last)
+
+    # Latest reply from each party, to work out who still owes whom.
+    my_last_to_other = 0
+    other_last_to: dict[str, int] = {}
+    for m in sorted(msgs, key=lambda x: x["id"]):
+        if m["sender"] == me_email and m["recipient"] == other:
+            my_last_to_other = m["id"]
+        if m["sender"] == other:
+            other_last_to[m["recipient"]] = m["id"]
+
+    owe_me = owe_them = 0
     for m in msgs:
-        m["waiting"] = m["sender"] == other and m["id"] > my_last
-    return {"messages": msgs, "waiting": waiting, "my_last_id": my_last}
+        # they messaged me and I haven't replied since → I owe them
+        m["owe_me"] = m["sender"] == other and m["recipient"] == me_email and m["id"] > my_last_to_other
+        # someone messaged them and they haven't replied since → they owe others
+        m["owe_them"] = m["recipient"] == other and m["id"] > other_last_to.get(m["sender"], 0)
+        owe_me += 1 if m["owe_me"] else 0
+        owe_them += 1 if m["owe_them"] else 0
+    return {"messages": msgs, "owe_me": owe_me, "owe_them": owe_them}
 
 
 @api.post("/messages/{message_id}/like")

@@ -1896,7 +1896,7 @@ const MSG_PAGE = 15;
 // A real 1:1 conversation (inbox thread): their unanswered messages up top,
 // then the public thread, then the private thread — with a reply box.
 function ConversationView({ me, person, authFetch, onBack, onActor }) {
-  const [data, setData] = useState({ messages: [], waiting: 0 });
+  const [data, setData] = useState({ messages: [], owe_me: 0, owe_them: 0 });
   const [body, setBody] = useState("");
   const [priv, setPriv] = useState(false);
   const [error, setError] = useState("");
@@ -1904,7 +1904,7 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
   const load = useCallback(() => {
     authFetch(`/messages/conversation?email=${encodeURIComponent(person.email)}`)
       .then((r) => r.json())
-      .then((d) => setData(d && d.messages ? d : { messages: [], waiting: 0 }))
+      .then((d) => setData(d && d.messages ? d : { messages: [], owe_me: 0, owe_them: 0 }))
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [person.email]);
@@ -1937,21 +1937,22 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
   }
 
   const msgs = data.messages || [];
-  const waitingMsgs = msgs.filter((m) => m.waiting);
-  const pub = msgs.filter((m) => !m.is_private && !m.waiting);
-  const prv = msgs.filter((m) => m.is_private && !m.waiting);
+  const oweMe = msgs.filter((m) => m.owe_me); // they wrote, I owe a reply
+  const oweThem = msgs.filter((m) => m.owe_them); // someone wrote, they owe a reply
+  const rest = msgs.filter((m) => !m.owe_me && !m.owe_them);
 
-  const line = (m, pinned) => (
+  const line = (m, sec) => (
     <div
-      key={`${pinned ? "w" : "m"}-${m.id}`}
+      key={`${sec}-${m.id}`}
       className={`conv-msg ${m.sender === me.email ? "mine" : "theirs"} ${
-        m.waiting && !pinned ? "is-waiting" : ""
+        sec === "them" ? "is-owed" : sec === "me" ? "is-waiting" : ""
       }`}
     >
       <div className="conv-msg-head">
         <strong style={{ color: actorColor(m.sender_name) }}>
           {m.sender === me.email ? "You" : m.sender_name}
         </strong>
+        <span className="conv-arrow">→ {m.recipient === me.email ? "you" : m.recipient_name}</span>
         {m.is_private && <span className="lock">🔒</span>}
         <span className="wall-time">{timeAgo(m.created_at)}</span>
         <button
@@ -1977,8 +1978,11 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
         <button className="conv-name" onClick={() => onActor(person.name)}>
           {person.name}
         </button>
-        {data.waiting > 0 && (
-          <span className="conv-wait-count">{data.waiting} waiting</span>
+        {data.owe_them > 0 && (
+          <span className="conv-wait-count">{data.owe_them} not responded</span>
+        )}
+        {data.owe_me > 0 && (
+          <span className="conv-wait-count you">{data.owe_me} for you</span>
         )}
       </div>
 
@@ -1998,29 +2002,34 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
       </form>
       {error && <p className="error">{error}</p>}
 
-      {waitingMsgs.length > 0 && (
+      {oweThem.length > 0 && (
+        <div className="conv-section conv-owed">
+          <div className="conv-section-title">
+            🕓 {person.name} hasn’t responded ({oweThem.length})
+          </div>
+          {oweThem.map((m) => line(m, "them"))}
+        </div>
+      )}
+
+      {oweMe.length > 0 && (
         <div className="conv-section conv-waiting">
           <div className="conv-section-title">⏳ Waiting on your reply</div>
-          {waitingMsgs.map((m) => line(m, true))}
+          {oweMe.map((m) => line(m, "me"))}
         </div>
       )}
 
-      {pub.length > 0 && (
+      {rest.length > 0 && (
         <div className="conv-section">
-          <div className="conv-section-title">Messages</div>
-          {pub.map((m) => line(m, false))}
-        </div>
-      )}
-
-      {prv.length > 0 && (
-        <div className="conv-section">
-          <div className="conv-section-title">🔒 Private</div>
-          {prv.map((m) => line(m, false))}
+          <div className="conv-section-title">Conversation</div>
+          {rest.map((m) => line(m, "rest"))}
         </div>
       )}
 
       {msgs.length === 0 && (
-        <div className="empty big">No messages with {person.name} yet — say hi 👋</div>
+        <div className="empty big">
+          Nothing visible with {person.name} — any pending replies of theirs are
+          on private threads you’re not part of.
+        </div>
       )}
     </main>
   );

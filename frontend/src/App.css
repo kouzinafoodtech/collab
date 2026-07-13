@@ -532,6 +532,26 @@ button.link {
   color: #b91c1c;
 }
 
+.conv-owed .conv-section-title {
+  color: #b45309;
+}
+
+.conv-wait-count.you {
+  background: var(--brand);
+}
+
+.conv-arrow {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.conv-msg.is-owed {
+  align-self: stretch;
+  max-width: 100%;
+  border-left: 4px solid #f59e0b;
+  background: #fffbeb;
+}
+
 .conv-msg {
   max-width: 82%;
   border-radius: 12px;
