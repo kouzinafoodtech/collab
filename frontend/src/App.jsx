@@ -3194,10 +3194,11 @@ function ComposeTask({ me, admins, depts, authFetch, onClose, onSent }) {
           </div>
           {f.repeat !== "once" && (
             <div className="muted compose-hint">
-              🔁 Repeats {f.repeat.replace("_", " ")}
-              {f.cutoff_date
-                ? ` — due day ${new Date(f.cutoff_date).getDate()} of each cycle`
-                : " — pick a due date to set the monthly cutoff day"}
+              {["daily", "weekly"].includes(f.repeat)
+                ? `🔁 A ${f.repeat} routine — it appears as ONE monthly checklist item in their inbox (like the finance tracker), not one task per ${f.repeat === "daily" ? "day" : "week"}.`
+                : `🔁 A new task lands in their inbox every ${
+                    { monthly: "month", quarterly: "quarter", half_yearly: "half-year", yearly: "year" }[f.repeat]
+                  }${f.cutoff_date ? `, due on day ${new Date(f.cutoff_date).getDate()}` : " — pick a due date to set which day it's due"}.`}
             </div>
           )}
           <button type="submit" disabled={sending}>
