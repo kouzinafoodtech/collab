@@ -432,7 +432,9 @@ def send_email(recipients: list[str], subject: str, body: str) -> bool:
 
 
 def resolve_names(emails: set[str]) -> dict[str, str]:
-    """email -> display name, for the emails that belong to admins."""
+    """email -> display name, for the emails that belong to admins. Keys are
+    stored under BOTH the stored-case and lowercase email, because pkdb holds
+    mixed-case addresses (Asif.ahmed@…) while KLU normalises to lowercase."""
     if not emails:
         return {}
     if IS_MYSQL:
@@ -442,8 +444,17 @@ def resolve_names(emails: set[str]) -> dict[str, str]:
                 .bindparams(bindparam("emails", expanding=True)),
                 {"emails": sorted(emails)},
             ).all()
-        return {em: n for em, n in pairs if n}
-    return {a["email"]: a["name"] for a in list_active_admins()}
+        out = {}
+        for em, n in pairs:
+            if n:
+                out[em] = n
+                out[em.lower()] = n
+        return out
+    out = {}
+    for a in list_active_admins():
+        out[a["email"]] = a["name"]
+        out[a["email"].lower()] = a["name"]
+    return out
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
