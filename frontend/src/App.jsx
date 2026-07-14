@@ -1893,15 +1893,21 @@ function ProgramCard({ p, me, admins, onPatch, onReload, authFetch }) {
         </form>
       )}
       {showUpdates && (
-        <ProgramUpdates programId={p.id} authFetch={authFetch} onPosted={onReload} />
+        <ProgramUpdates
+          programId={p.id}
+          authFetch={authFetch}
+          onPosted={onReload}
+          admins={admins}
+        />
       )}
     </article>
   );
 }
 
-function ProgramUpdates({ programId, authFetch, onPosted }) {
+function ProgramUpdates({ programId, authFetch, onPosted, admins = [] }) {
   const [updates, setUpdates] = useState([]);
   const [body, setBody] = useState("");
+  const [mentions, setMentions] = useState([]); // emails picked via @
 
   const load = useCallback(() => {
     authFetch(`/programs/${programId}/updates`)
@@ -1913,15 +1919,32 @@ function ProgramUpdates({ programId, authFetch, onPosted }) {
 
   useEffect(load, [load]);
 
+  // @mention autocomplete on the token being typed at the end of the input.
+  const tokenMatch = body.match(/@([\w.]*)$/);
+  const suggestions = tokenMatch
+    ? admins
+        .filter((a) =>
+          (a.name || a.email).toLowerCase().includes(tokenMatch[1].toLowerCase())
+        )
+        .slice(0, 5)
+    : [];
+
+  function pickMention(a) {
+    const first = (a.name || a.email).split(" ")[0];
+    setBody(body.replace(/@([\w.]*)$/, `@${first} `));
+    setMentions((cur) => [...new Set([...cur, a.email])]);
+  }
+
   async function post(e) {
     e.preventDefault();
     if (!body.trim()) return;
     const res = await authFetch(`/programs/${programId}/updates`, {
       method: "POST",
-      body: JSON.stringify({ body: body.trim() }),
+      body: JSON.stringify({ body: body.trim(), mentions }),
     }).catch(() => null);
     if (res && res.ok) {
       setBody("");
+      setMentions([]);
       load();
       if (onPosted) onPosted();
     }
@@ -1932,12 +1955,29 @@ function ProgramUpdates({ programId, authFetch, onPosted }) {
       <form onSubmit={post} className="comment-form">
         <input
           className="grow"
-          placeholder="Add a progress update…"
+          placeholder="Add a progress update… (@name to tag someone)"
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
         <button type="submit">Post</button>
       </form>
+      {suggestions.length > 0 && (
+        <div className="mention-sugg">
+          {suggestions.map((a) => (
+            <button
+              key={a.email}
+              type="button"
+              className="mention-item"
+              onClick={() => pickMention(a)}
+            >
+              <span className="avatar sm" style={{ background: actorColor(a.name || a.email) }}>
+                {initials(a.name || a.email)}
+              </span>
+              {a.name || a.email}
+            </button>
+          ))}
+        </div>
+      )}
       {updates.map((u) => (
         <div key={u.id} className="comment">
           <strong style={{ color: actorColor(u.author_name) }}>{u.author_name}</strong>

@@ -26,6 +26,7 @@ Storage:
 import io
 import json
 import os
+import re
 import smtplib
 import ssl
 from datetime import datetime, timedelta, timezone
@@ -4488,9 +4489,17 @@ def program_updates(program_id: int, admin: dict = Depends(current_admin)):
     ]
 
 
+class ProgramUpdateIn(BaseModel):
+    body: str = Field(..., min_length=1, max_length=1000)
+    mentions: list[str] = []
+
+
 @api.post("/programs/{program_id}/updates", status_code=201)
 def add_program_update(
-    program_id: int, payload: CommentIn, admin: dict = Depends(current_admin)
+    program_id: int,
+    payload: ProgramUpdateIn,
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(current_admin),
 ):
     body = payload.body.strip()
     if not body:
@@ -4516,7 +4525,32 @@ def add_program_update(
         f"posted update · “{body[:70]}”",
         {"name": prog_name, "module": "Programs"},
     )
-    return {"ok": True}
+
+    # @mentions: explicit picks from the composer, plus @tokens in the text
+    # resolved against admin names (unique matches only).
+    cand = {_norm_email(e) for e in payload.mentions if e}
+    for tok in re.findall(r"@([A-Za-z][\w.]*)", body):
+        hits = [
+            a for a in list_active_admins()
+            if _owner_matches(tok, a.get("name") or "")
+        ]
+        if len(hits) == 1:
+            cand.add(_norm_email(hits[0]["email"]))
+    cand.discard(_norm_email(admin["email"]))
+    mentioned = [e for e in sorted(cand) if is_active_admin(e)]
+    if mentioned:
+        note = f"💬 {actor} mentioned you on “{prog_name}”: “{body[:300]}”"
+        with SessionLocal() as db:
+            for e in mentioned:
+                db.add(MessageRow(sender=admin["email"], recipient=e, body=note, is_private=1))
+            db.commit()
+        if email_enabled():
+            background_tasks.add_task(
+                send_email, mentioned,
+                f"[Kouzina Live] You were mentioned on {prog_name}",
+                f"{note}\n\nOpen: https://live.kftpl.com",
+            )
+    return {"ok": True, "mentioned": mentioned}
 
 
 # ---- Anonymous feedback -----------------------------------------------------------
