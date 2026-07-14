@@ -389,6 +389,37 @@ if IS_MYSQL:
     except Exception:
         pass
 
+# Repair replies that were mis-addressed to their own sender (the old reply
+# flow copied the root's recipient, so B replying to A stored B→B). Point them
+# at the thread's other party (idempotent: only touches sender==recipient rows).
+try:
+    with SessionLocal() as _db:
+        _bad = (
+            _db.query(MessageRow)
+            .filter(
+                MessageRow.parent_id.isnot(None),
+                func.lower(MessageRow.sender) == func.lower(MessageRow.recipient),
+            )
+            .all()
+        )
+        _fixed = False
+        for _m in _bad:
+            _root = _db.get(MessageRow, _m.parent_id)
+            if not _root:
+                continue
+            _other = (
+                _root.sender
+                if (_root.sender or "").lower() != (_m.sender or "").lower()
+                else _root.recipient
+            )
+            if _other and _other.lower() != (_m.sender or "").lower():
+                _m.recipient = _other
+                _fixed = True
+        if _fixed:
+            _db.commit()
+except Exception:
+    pass
+
 # Backfill: pre-existing programs inherit their owner's department (idempotent).
 try:
     with SessionLocal() as _db:
@@ -2465,13 +2496,15 @@ def overview(admin: dict = Depends(current_admin)):
             .order_by(MessageRow.id.asc())
             .all()
         )
+        me_l = _norm_email(me)
         latest_pair: dict[tuple, int] = {}   # (sender, recipient) -> latest id
         my_incoming: dict[str, list] = {}    # sender -> ids they sent me
         for mid, s, r in rows:
+            s, r = _norm_email(s), _norm_email(r)
             if not s or not r or s == r:
                 continue
             latest_pair[(s, r)] = mid  # asc order → last write is the max id
-            if r == me:
+            if r == me_l:
                 my_incoming.setdefault(s, []).append(mid)
 
         # Org-wide: for each person R, how many distinct people are still
@@ -2485,7 +2518,7 @@ def overview(admin: dict = Depends(current_admin)):
         # Personal: people I owe a reply to, counted by unanswered messages.
         waiting = []
         for other, ids in my_incoming.items():
-            lr = latest_pair.get((me, other), 0)
+            lr = latest_pair.get((me_l, other), 0)
             cnt = sum(1 for i in ids if i > lr)
             if cnt:
                 waiting.append({"email": other, "count": cnt})
@@ -2727,20 +2760,23 @@ def messages_conversation(email: str, admin: dict = Depends(current_admin)):
         msgs = _serialize_msgs(db, rows, me_email)
 
     # Latest reply from each party, to work out who still owes whom.
+    me_l, other_l = _norm_email(me_email), _norm_email(other)
     my_last_to_other = 0
     other_last_to: dict[str, int] = {}
     for m in sorted(msgs, key=lambda x: x["id"]):
-        if m["sender"] == me_email and m["recipient"] == other:
+        s, r = _norm_email(m["sender"]), _norm_email(m["recipient"])
+        if s == me_l and r == other_l:
             my_last_to_other = m["id"]
-        if m["sender"] == other:
-            other_last_to[m["recipient"]] = m["id"]
+        if s == other_l:
+            other_last_to[r] = m["id"]
 
     owe_me = owe_them = 0
     for m in msgs:
+        s, r = _norm_email(m["sender"]), _norm_email(m["recipient"])
         # they messaged me and I haven't replied since → I owe them
-        m["owe_me"] = m["sender"] == other and m["recipient"] == me_email and m["id"] > my_last_to_other
+        m["owe_me"] = s == other_l and r == me_l and m["id"] > my_last_to_other
         # someone messaged them and they haven't replied since → they owe others
-        m["owe_them"] = m["recipient"] == other and m["id"] > other_last_to.get(m["sender"], 0)
+        m["owe_them"] = r == other_l and m["id"] > other_last_to.get(s, 0)
         owe_me += 1 if m["owe_me"] else 0
         owe_them += 1 if m["owe_them"] else 0
     return {"messages": msgs, "owe_me": owe_me, "owe_them": owe_them}
@@ -2784,11 +2820,22 @@ def messages_send(payload: SendIn, admin: dict = Depends(current_admin)):
             root = db.get(MessageRow, payload.parent_id)
             if not root:
                 raise HTTPException(status_code=404, detail="Thread not found")
-            if root.is_private and admin["email"] not in (root.sender, root.recipient):
+            me_l = _norm_email(admin["email"])
+            if root.is_private and me_l not in (
+                _norm_email(root.sender), _norm_email(root.recipient)
+            ):
                 raise HTTPException(status_code=403, detail="Not your thread")
+            # Reply to the OTHER party — replying to a message sent to me must
+            # go back to its sender, otherwise the reply never counts as a
+            # response and the thread stays "not responded" forever.
+            other = (
+                root.sender
+                if _norm_email(root.sender) != me_l
+                else root.recipient
+            )
             row = MessageRow(
                 sender=admin["email"],
-                recipient=root.recipient,
+                recipient=other,
                 body=text_body,
                 is_private=root.is_private,
                 parent_id=root.parent_id or root.id,  # keep threads one level deep
