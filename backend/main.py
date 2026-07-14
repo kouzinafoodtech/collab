@@ -151,6 +151,8 @@ class ProgramRow(Base):
     description = Column(Text, nullable=True)
     owner_email = Column(String(255), nullable=True)
     owner_name = Column(String(255), nullable=True)
+    assignee_email = Column(String(255), nullable=True)
+    assignee_name = Column(String(255), nullable=True)
     department = Column(String(255), nullable=True)
     eta = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(20), nullable=False, default="not_started")
@@ -304,6 +306,8 @@ if IS_MYSQL:
             "ALTER TABLE programs ADD COLUMN objective TEXT NULL",
             "ALTER TABLE programs ADD COLUMN description TEXT NULL",
             "ALTER TABLE programs ADD COLUMN department VARCHAR(255) NULL",
+            "ALTER TABLE programs ADD COLUMN assignee_email VARCHAR(255) NULL",
+            "ALTER TABLE programs ADD COLUMN assignee_name VARCHAR(255) NULL",
         ):
             try:
                 conn.execute(text(ddl))
@@ -2568,7 +2572,10 @@ def overview(admin: dict = Depends(current_admin)):
             for p in db.query(ProgramRow)
             .filter(
                 ProgramRow.active == 1,
-                func.lower(ProgramRow.owner_email) == me.lower(),
+                or_(
+                    func.lower(ProgramRow.owner_email) == me.lower(),
+                    func.lower(ProgramRow.assignee_email) == me.lower(),
+                ),
                 ProgramRow.status != "complete",
             )
             .order_by(ProgramRow.eta.asc())
@@ -4171,6 +4178,7 @@ class ProgramIn(BaseModel):
     objective: Optional[str] = Field(default=None, max_length=2000)
     description: Optional[str] = Field(default=None, max_length=5000)
     owner_email: Optional[str] = None
+    assignee_email: Optional[str] = None
     department: Optional[str] = Field(default=None, max_length=255)
     eta: Optional[str] = None  # YYYY-MM-DD
 
@@ -4180,6 +4188,7 @@ class ProgramPatch(BaseModel):
     objective: Optional[str] = Field(default=None, max_length=2000)
     description: Optional[str] = Field(default=None, max_length=5000)
     owner_email: Optional[str] = None
+    assignee_email: Optional[str] = None
     department: Optional[str] = Field(default=None, max_length=255)
     eta: Optional[str] = None
     status: Optional[str] = None
@@ -4212,6 +4221,8 @@ def _serialize_program(
         "description": p.description,
         "owner_email": p.owner_email,
         "owner_name": p.owner_name,
+        "assignee_email": p.assignee_email,
+        "assignee_name": p.assignee_name,
         "department": p.department,
         "eta": p.eta.date().isoformat() if p.eta else None,
         "status": p.status,
@@ -4271,8 +4282,45 @@ def list_programs(
     }
 
 
+def _notify_program_assignee(admin: dict, row, background_tasks: Optional[BackgroundTasks]):
+    """Message + email the assignee with the program's details."""
+    assignee = _norm_email(row.assignee_email or "")
+    if not assignee or assignee == _norm_email(admin["email"]):
+        return
+    who = admin.get("name") or admin["email"]
+    eta = row.eta.date().strftime("%d %b %Y") if row.eta else None
+    note = f"📌 Program assigned to you: “{row.name}”"
+    if eta:
+        note += f" · ETA {eta}"
+    note += f" — by {who}"
+    with SessionLocal() as db:
+        db.add(MessageRow(sender=admin["email"], recipient=assignee, body=note, is_private=1))
+        db.commit()
+    if email_enabled() and background_tasks is not None:
+        lines = [f"Program: {row.name}"]
+        if row.objective:
+            lines.append(f"Objective: {row.objective}")
+        if row.description:
+            lines.append(f"Details: {row.description}")
+        if eta:
+            lines.append(f"ETA: {eta}")
+        if row.owner_name:
+            lines.append(f"Owner: {row.owner_name}")
+        lines.append(f"Assigned by: {who}")
+        lines.append("Open: https://live.kftpl.com")
+        background_tasks.add_task(
+            send_email, [assignee],
+            f"[Kouzina Live] Program assigned to you: {row.name}",
+            "\n\n".join(lines),
+        )
+
+
 @api.post("/programs", status_code=201)
-def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
+def create_program(
+    payload: ProgramIn,
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(current_admin),
+):
     owner_email, owner_name = _owner_fields(payload.owner_email)
     with SessionLocal() as db:
         # Department follows the owner unless set explicitly (department page).
@@ -4284,12 +4332,15 @@ def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
                 .first()
             )
             dept = p.department if p else None
+        a_email, a_name = _owner_fields(payload.assignee_email or None)
         row = ProgramRow(
             name=payload.name.strip(),
             objective=(payload.objective or "").strip() or None,
             description=(payload.description or "").strip() or None,
             owner_email=owner_email,
             owner_name=owner_name,
+            assignee_email=a_email,
+            assignee_name=a_name,
             department=dept,
             eta=_parse_eta(payload.eta),
             status="not_started",
@@ -4297,6 +4348,8 @@ def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
         )
         db.add(row)
         db.commit()
+        if a_email:
+            _notify_program_assignee(admin, row, background_tasks)
         result = _serialize_program(row)
     emit_live_event(
         admin.get("name") or admin["email"],
@@ -4308,7 +4361,12 @@ def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
 
 
 @api.patch("/programs/{program_id}")
-def patch_program(program_id: int, payload: ProgramPatch, admin: dict = Depends(current_admin)):
+def patch_program(
+    program_id: int,
+    payload: ProgramPatch,
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(current_admin),
+):
     actor = admin.get("name") or admin["email"]
     with SessionLocal() as db:
         row = db.get(ProgramRow, program_id)
@@ -4379,6 +4437,15 @@ def patch_program(program_id: int, payload: ProgramPatch, admin: dict = Depends(
                 )
             )
         db.commit()
+        if assignee_changed and row.assignee_email:
+            _notify_program_assignee(admin, row, background_tasks)
+            events.append(
+                (
+                    "program_assigned",
+                    f"assigned program to {row.assignee_name or row.assignee_email}",
+                    {"name": row.name, "module": "Programs"},
+                )
+            )
         result = _serialize_program(row)
     for action, summary, details in events:
         emit_live_event(actor, action, summary, details)

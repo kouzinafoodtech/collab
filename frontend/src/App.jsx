@@ -603,7 +603,7 @@ function Shell({ me, authFetch, logout }) {
         <RedFlags data={redflags} admins={admins} authFetch={authFetch} />
       )}
       {view === "programs" && (
-        <Programs admins={admins} authFetch={authFetch} onOpenDept={openDept} />
+        <Programs me={me} admins={admins} authFetch={authFetch} onOpenDept={openDept} />
       )}
       {view === "feedback" && <Feedback authFetch={authFetch} />}
       {view === "messages" &&
@@ -1484,7 +1484,7 @@ function staleDays(p) {
   return days >= 7 ? days : 0;
 }
 
-function Programs({ admins, authFetch, onOpenDept }) {
+function Programs({ me, admins, authFetch, onOpenDept }) {
   const [items, setItems] = useState([]);
   const [deptRows, setDeptRows] = useState([]);
   const [total, setTotal] = useState(0);
@@ -1684,6 +1684,7 @@ function Programs({ admins, authFetch, onOpenDept }) {
             <ProgramCard
               key={p.id}
               p={p}
+              me={me}
               admins={admins}
               onPatch={patch}
               onReload={() => load(items.length)}
@@ -1722,7 +1723,11 @@ function Programs({ admins, authFetch, onOpenDept }) {
   );
 }
 
-function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
+function ProgramCard({ p, me, admins, onPatch, onReload, authFetch }) {
+  const canAssign =
+    !!me &&
+    (me.is_super ||
+      (p.owner_email || "").toLowerCase() === (me.email || "").toLowerCase());
   const [editing, setEditing] = useState(false);
   const [showUpdates, setShowUpdates] = useState(false);
   const [expandDesc, setExpandDesc] = useState(false);
@@ -1731,6 +1736,7 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
     objective: p.objective || "",
     description: p.description || "",
     owner_email: p.owner_email || "",
+    assignee_email: p.assignee_email || "",
     eta: p.eta || "",
   });
   const eta = etaInfo(p);
@@ -1743,6 +1749,7 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
       objective: edit.objective,
       description: edit.description,
       owner_email: edit.owner_email,
+      ...(canAssign ? { assignee_email: edit.assignee_email } : {}),
       eta: edit.eta || null,
     });
     setEditing(false);
@@ -1803,6 +1810,11 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
         ) : (
           <span className="muted">no owner</span>
         )}
+        {p.assignee_name && (
+          <span className="prog-assignee" title={`Assigned to ${p.assignee_name}`}>
+            → {p.assignee_name}
+          </span>
+        )}
         {p.department && <span className="chip chip-order">{p.department}</span>}
         <span className="prog-actions">
           <button
@@ -1857,6 +1869,19 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
                 </option>
               ))}
             </select>
+            {canAssign && (
+              <select
+                value={edit.assignee_email}
+                onChange={(e) => setEdit({ ...edit, assignee_email: e.target.value })}
+              >
+                <option value="">Assign to… (optional)</option>
+                {admins.map((a) => (
+                  <option key={a.email} value={a.email}>
+                    {a.name || a.email}
+                  </option>
+                ))}
+              </select>
+            )}
             <input
               type="date"
               value={edit.eta}
@@ -3411,6 +3436,7 @@ function DeptView({ department, me, admins, authFetch, onActor, onMessage, onBac
           <ProgramCard
             key={p.id}
             p={p}
+            me={me}
             admins={admins}
             onPatch={patch}
             onReload={load}

@@ -3403,3 +3403,9 @@ button.link {
     grid-template-columns: 1fr;
   }
 }
+
+.prog-assignee {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #0e7490;
+}
