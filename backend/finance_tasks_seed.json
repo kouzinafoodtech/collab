@@ -1,0 +1,725 @@
+{
+ "department": "Finance",
+ "templates": [
+  {
+   "title": "KFTPL Bank Entries (HDFC & ICICI)",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "daily",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Punch Order, Website sales, and Other Revenue",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "1. KSSPL & KFTPL deduction entries & intercompany reconciliation",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Paytm, RazorPay (Receipt & Commission entries)",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Credit card expenses",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": "To review cost centers"
+  },
+  {
+   "title": "Razorpay reimbursement entries",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": "To review cost centers"
+  },
+  {
+   "title": "KKP & KMKP & Adigas Weekly Payout",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Happay expenses review",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": null,
+   "support_by": "Kiran",
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "COCO-MIS",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": null,
+   "support_by": "Shashank",
+   "frequency": "monthly",
+   "cutoff_day": 8,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Reports (Based on assigned task 1 to 7)",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "need_basis",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Aggregator Revenue workings and accounting / UP Report",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Kiran",
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Commission workings and accounting",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Kiran",
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "CPC Charges workings and Accounting",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Kiran",
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "KKP fee workings, invoicing and accounting",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Aparna",
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Corporate  and Other expenses entries",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Kiran",
+   "frequency": "daily",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Happay (expenses verification, recon & entries)",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya",
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Aggregator Receivable Reconciliation",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Aparna",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Statutory working, Payment",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Aparna",
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "GST Returns",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Aparna",
+   "frequency": "monthly",
+   "cutoff_day": 8,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "TDS Returns & Form 16A",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Aparna",
+   "frequency": "quarterly",
+   "cutoff_day": null,
+   "due_months": "7,10,1,4",
+   "notes": null
+  },
+  {
+   "title": "Reports (Based on assigned task 1 to 10)",
+   "assignee_email": "kiran.h@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Kiran",
+   "frequency": "need_basis",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "KKP Weekly Payout",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Praneetha",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "KKP Payment entries",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Praneetha",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Rent expenses entries & Payment Entry",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Praneetha",
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "KKP Invoice entries & Invoicing",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Praneetha",
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "KKP Fee deduction entries",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya",
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "KKP Stock deduction entries - KSSPL & KFTPL",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya",
+   "frequency": "monthly",
+   "cutoff_day": 3,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "KMKP Invoice entries",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya",
+   "frequency": "monthly",
+   "cutoff_day": 8,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Adigas Invoice entries",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya",
+   "frequency": "monthly",
+   "cutoff_day": 8,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Review & Support for MIS",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya & Shashank",
+   "frequency": "monthly",
+   "cutoff_day": 8,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "All corporate expenses review",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Shashank & Kiran",
+   "frequency": "monthly",
+   "cutoff_day": 8,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Reports (Based on assigned task 1 to 11)",
+   "assignee_email": "praneetha.r@kftpl.com",
+   "company": null,
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Revenue / Sales invoice",
+   "assignee_email": "kamalesh.b@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Shashank",
+   "frequency": "daily",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Expenses entries (payments outside MYSA)",
+   "assignee_email": "kamalesh.b@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Shashank",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Support for all KSSPL Tasks and support for Shashank",
+   "assignee_email": "kamalesh.b@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Shashank",
+   "frequency": "need_basis",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Reports (Based on assigned task 1 to 3)",
+   "assignee_email": "kamalesh.b@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Shashank",
+   "frequency": "need_basis",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Vendor Payment",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Purchase bills entries (Outlets)",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Bhavya",
+   "frequency": "weekly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Payments details to be shared with Kiran& Bhavya (Other expenses)",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KFTPL",
+   "support_by": "Shashank",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Closing stock",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "COGS report",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": "Bifurcation of Packing & Food details received late"
+  },
+  {
+   "title": "Cashflow",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Shashank",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Receivable Report",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": null,
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Payables Report",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Purchase Reconciliation with MYSA",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Kamalesh",
+   "frequency": "weekly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Vendor Payments",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Kamalesh",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "COGS workings",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Kamalesh",
+   "frequency": "monthly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Sales Review",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Shashank",
+   "frequency": "weekly",
+   "cutoff_day": 5,
+   "due_months": null,
+   "notes": "Exceptions in Tally pending for resolve hence delayed"
+  },
+  {
+   "title": "Statutory working, Payment",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Kamalesh",
+   "frequency": "monthly",
+   "cutoff_day": 6,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "GST Return",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Kamalesh",
+   "frequency": "monthly",
+   "cutoff_day": 9,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "TDS Returns & Form 16A",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Shashank",
+   "frequency": "quarterly",
+   "cutoff_day": null,
+   "due_months": "7,10,1,4",
+   "notes": null
+  },
+  {
+   "title": "KSSPL MIS",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Aparna",
+   "frequency": "monthly",
+   "cutoff_day": 9,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Reports",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Aparna",
+   "frequency": "need_basis",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Phonepe, Razorpay entries - Review",
+   "assignee_email": "shashank.k@kftpl.com",
+   "company": "KSSPL",
+   "support_by": "Kamalesh",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Bank Entries",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "daily",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Vendor Payment",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Payables Report",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Aggregator Revenue workings and accounting / UP Report",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Kiran",
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Commission workings and accounting",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Kiran",
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Closing stock and purchase details",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "B2B Invoice",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Imprest expenses / Petty cash / Kitchen related",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": null,
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "CPC and Ads",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Statury working, Payment",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": "TDS done"
+  },
+  {
+   "title": "GST Returns",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Kiran",
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": "GSTR-1 filed"
+  },
+  {
+   "title": "TDS Returns & Form 16A",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "quarterly",
+   "cutoff_day": null,
+   "due_months": "7,10,1,4",
+   "notes": null
+  },
+  {
+   "title": "Reports (Based on assigned task 1 to 10)",
+   "assignee_email": "bhavya.cb@kftpl.com",
+   "company": "MOPP",
+   "support_by": "Aparna",
+   "frequency": "need_basis",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Cashflow-Consolidated",
+   "assignee_email": "aparna.gk@kftpl.com",
+   "company": "All entity",
+   "support_by": "Harsha & Shashank",
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Payroll entries and related reconciliation",
+   "assignee_email": "aparna.gk@kftpl.com",
+   "company": "KFTPL",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Review of all Accounting & Finance Activities of 3 entities",
+   "assignee_email": "aparna.gk@kftpl.com",
+   "company": "All entity",
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Secretarial activity",
+   "assignee_email": "aparna.gk@kftpl.com",
+   "company": null,
+   "support_by": null,
+   "frequency": "monthly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  },
+  {
+   "title": "Weekly running P&L",
+   "assignee_email": "aparna.gk@kftpl.com",
+   "company": "All entity",
+   "support_by": null,
+   "frequency": "weekly",
+   "cutoff_day": null,
+   "due_months": null,
+   "notes": null
+  }
+ ]
+}

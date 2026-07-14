@@ -359,6 +359,36 @@ if IS_MYSQL:
         except Exception:
             pass  # merge must never block boot
 
+# Seed Aparna's finance tracker as recurring task templates (one-shot: skipped
+# the moment any Finance template exists). Instances materialise lazily.
+if IS_MYSQL:
+    try:
+        _seed_path = Path(__file__).parent / "finance_tasks_seed.json"
+        if _seed_path.exists():
+            with SessionLocal() as _db:
+                _has = (
+                    _db.query(TaskTemplateRow)
+                    .filter(TaskTemplateRow.department == "Finance")
+                    .first()
+                )
+                if not _has:
+                    _seed = json.loads(_seed_path.read_text())
+                    for _t in _seed.get("templates", []):
+                        _db.add(
+                            TaskTemplateRow(
+                                title=_t["title"], assignee_email=_t["assignee_email"],
+                                department=_seed.get("department", "Finance"),
+                                company=_t.get("company"), support_by=_t.get("support_by"),
+                                frequency=_t.get("frequency", "monthly"),
+                                cutoff_day=_t.get("cutoff_day"),
+                                due_months=_t.get("due_months"), notes=_t.get("notes"),
+                                created_by="seed:finance-tracker",
+                            )
+                        )
+                    _db.commit()
+    except Exception:
+        pass
+
 # Backfill: pre-existing programs inherit their owner's department (idempotent).
 try:
     with SessionLocal() as _db:
@@ -1073,6 +1103,7 @@ def me(admin: dict = Depends(current_admin)):
         out["department"] = p.department if p else None
         out["function"] = p.function if p else None
     out["is_super"] = is_superadmin(admin["email"])
+    out["owns"] = sorted(owned_departments_of(admin))
     return out
 
 
@@ -1977,33 +2008,31 @@ def my_tasks(admin: dict = Depends(current_admin)):
 def team_tasks(
     department: Optional[str] = Query(default=None),
     period: Optional[str] = Query(default=None),
+    assignee: Optional[str] = Query(default=None),
     admin: dict = Depends(current_admin),
 ):
-    """A department's task sheet for one month (Aparna's per-month tab).
-    Visible to that department's members, its owner, and superadmins."""
+    """A department's task sheet for one month — the oversight view. Inboxes
+    are private, so this is for the department OWNER and superadmins only."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     ensure_task_instances(now)
-    my_dept = _my_department(admin["email"])
     owned = owned_departments_of(admin)
-    department = department or my_dept
+    department = department or (sorted(owned)[0] if owned else None)
     if not department:
-        return {"department": None, "tasks": [], "period": period or _current_period(now)}
-    if not (
-        is_superadmin(admin["email"]) or department == my_dept or department in owned
-    ):
-        raise HTTPException(status_code=403, detail="Tasks are visible to the department only")
+        if is_superadmin(admin["email"]):
+            department = "Finance"
+        else:
+            raise HTTPException(status_code=403, detail="Team view is for department owners")
+    if not (is_superadmin(admin["email"]) or department in owned):
+        raise HTTPException(status_code=403, detail="Only the department owner sees the team's tasks")
     period = period or _current_period(now)
     with SessionLocal() as db:
-        rows = (
-            db.query(TaskRow)
-            .filter(
-                TaskRow.department == department,
-                or_(TaskRow.period == period, TaskRow.period.is_(None)),
-            )
-            .order_by(TaskRow.assignee_email, TaskRow.cutoff_date.asc())
-            .limit(500)
-            .all()
+        q = db.query(TaskRow).filter(
+            TaskRow.department == department,
+            or_(TaskRow.period == period, TaskRow.period.is_(None)),
         )
+        if assignee:
+            q = q.filter(func.lower(TaskRow.assignee_email) == _norm_email(assignee))
+        rows = q.order_by(TaskRow.assignee_email, TaskRow.cutoff_date.asc()).limit(500).all()
     tasks = [_serialize_task(t, now) for t in rows]
     if period != _current_period(now):
         tasks = [t for t in tasks if t["period"] == period]
@@ -2022,6 +2051,29 @@ def team_tasks(
     }
 
 
+@api.get("/tasks/sent")
+def sent_tasks(admin: dict = Depends(current_admin)):
+    """Tasks I assigned to others — my Sent folder."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with SessionLocal() as db:
+        rows = (
+            db.query(TaskRow)
+            .filter(TaskRow.created_by == admin["email"])
+            .order_by(TaskRow.id.desc())
+            .limit(100)
+            .all()
+        )
+    tasks = [_serialize_task(t, now) for t in rows]
+    names = resolve_names({t["assignee_email"] for t in tasks})
+    for t in tasks:
+        t["assignee_name"] = (
+            names.get(t["assignee_email"])
+            or names.get(t["assignee_email"].lower())
+            or t["assignee_email"].split("@")[0]
+        )
+    return {"tasks": tasks}
+
+
 @api.post("/tasks", status_code=201)
 def create_task(
     payload: TaskIn,
@@ -2033,10 +2085,6 @@ def create_task(
     if not is_active_admin(assignee) and not is_active_admin(payload.assignee_email):
         raise HTTPException(status_code=400, detail="Assignee must be an active admin")
     dept = (payload.department or "").strip() or _my_department(assignee)
-    if not (owned_departments_of(admin) or is_superadmin(admin["email"])):
-        raise HTTPException(
-            status_code=403, detail="Only department owners can assign tasks"
-        )
     cutoff = None
     if payload.cutoff_date:
         try:

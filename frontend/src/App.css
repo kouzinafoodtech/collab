@@ -3224,3 +3224,132 @@ button.link {
   flex-direction: column;
   gap: 6px;
 }
+
+/* ---- Tasks: gmail-style layout ---- */
+.tasks-layout {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  align-items: start;
+  max-width: 940px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.tasks-side {
+  position: sticky;
+  top: 56px;
+  padding: 20px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tasks-compose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 12px 18px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  box-shadow: 0 6px 18px rgba(79, 70, 229, 0.25);
+}
+
+.tasks-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 0 999px 999px 0;
+  padding: 9px 14px;
+  color: #334155;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tasks-nav-item:hover {
+  background: #eef1f7;
+  filter: none;
+}
+
+.tasks-nav-item.active {
+  background: #e7e9fd;
+  color: var(--brand);
+}
+
+.tasks-nav-count {
+  margin-left: auto;
+  font-size: 0.74rem;
+  font-weight: 800;
+  background: var(--brand);
+  color: #fff;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.tasks-fab {
+  display: none;
+}
+
+.compose-modal {
+  max-width: 440px;
+  width: 94vw;
+}
+
+.compose-modal select,
+.compose-modal textarea {
+  border: 1px solid #d0d3d7;
+  border-radius: 9px;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  width: 100%;
+  background: #fff;
+}
+
+@media (max-width: 860px) {
+  .tasks-layout {
+    display: block;
+  }
+
+  .tasks-side {
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    padding: 10px 12px 0;
+    gap: 6px;
+    overflow-x: auto;
+  }
+
+  .tasks-compose {
+    display: none;
+  }
+
+  .tasks-nav-item {
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: #fff;
+    white-space: nowrap;
+    padding: 7px 13px;
+  }
+
+  .tasks-fab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    right: 16px;
+    bottom: 18px;
+    z-index: 55;
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    font-size: 1.3rem;
+    box-shadow: 0 8px 24px rgba(79, 70, 229, 0.4);
+  }
+}
