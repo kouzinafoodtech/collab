@@ -151,6 +151,7 @@ class ProgramRow(Base):
     description = Column(Text, nullable=True)
     owner_email = Column(String(255), nullable=True)
     owner_name = Column(String(255), nullable=True)
+    department = Column(String(255), nullable=True)
     eta = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(20), nullable=False, default="not_started")
     active = Column(Integer, nullable=False, default=1)
@@ -256,6 +257,7 @@ if IS_MYSQL:
             "ALTER TABLE messages ADD COLUMN parent_id INT NULL",
             "ALTER TABLE programs ADD COLUMN objective TEXT NULL",
             "ALTER TABLE programs ADD COLUMN description TEXT NULL",
+            "ALTER TABLE programs ADD COLUMN department VARCHAR(255) NULL",
         ):
             try:
                 conn.execute(text(ddl))
@@ -943,6 +945,28 @@ def me(admin: dict = Depends(current_admin)):
     return out
 
 
+def _owner_matches(owner: str, name: str) -> bool:
+    """Does this display name belong to the owner? Owners in the sheet are short
+    names ("Shanil", "GG"), so match exact, first-name or initials."""
+    o, n = (owner or "").strip().lower(), (name or "").strip().lower()
+    if not o or not n:
+        return False
+    if n == o or n.startswith(o + " "):
+        return True
+    parts = n.split()
+    if parts and parts[0] == o:
+        return True
+    return "".join(w[0] for w in parts if w) == o
+
+
+def _resolve_owner(owner: str) -> Optional[dict]:
+    """Find the admin account behind an owner short-name, if unambiguous."""
+    if not owner:
+        return None
+    hits = [a for a in list_active_admins() if _owner_matches(owner, a.get("name") or "")]
+    return hits[0] if len(hits) == 1 else None
+
+
 @api.get("/org/team")
 def org_team(
     department: Optional[str] = Query(default=None),
@@ -982,10 +1006,24 @@ def org_team(
             "email": p.email,
             "function": p.function,
             "sub_department": p.sub_department,
+            "is_owner": bool(owner) and _owner_matches(owner, names.get(p.email) or ""),
         }
         for p in profs
     ]
-    members.sort(key=lambda m: m["name"].lower())
+    # The owner belongs to the team even when their home profile sits in
+    # another department (e.g. RK owns Supply Chain + 3rd Party Brands).
+    if owner and not any(m["is_owner"] for m in members):
+        acct = _resolve_owner(owner)
+        members.append(
+            {
+                "name": (acct or {}).get("name") or owner,
+                "email": (acct or {}).get("email"),
+                "function": None,
+                "sub_department": None,
+                "is_owner": True,
+            }
+        )
+    members.sort(key=lambda m: (not m["is_owner"], m["name"].lower()))
     return {"department": department, "owner": owner, "members": members}
 
 
@@ -1316,20 +1354,34 @@ def org_structure(admin: dict = Depends(current_admin)):
     with SessionLocal() as db:
         rows = db.query(OrgDeptRow).filter(OrgDeptRow.active == 1).all()
         profs = (
-            db.query(UserProfileRow.department, UserProfileRow.function, UserProfileRow.owner)
+            db.query(
+                UserProfileRow.email, UserProfileRow.department,
+                UserProfileRow.function, UserProfileRow.owner,
+            )
             .filter(UserProfileRow.department.isnot(None))
             .all()
         )
+    member_names = resolve_names({p.email for p in profs})
     counts: Counter = Counter()
     fn_by, own_by, canonical = defaultdict(Counter), defaultdict(Counter), {}
-    for dept, fn, own in profs:
+    names_by = defaultdict(list)
+    for email, dept, fn, own in profs:
         key = dept.strip().lower()
         counts[key] += 1
+        names_by[key].append(member_names.get(email) or email.split("@")[0])
         canonical.setdefault(key, dept.strip())
         if fn:
             fn_by[key][fn.strip()] += 1
         if own:
             own_by[key][own.strip()] += 1
+
+    def _count(key: str, owner: Optional[str]) -> int:
+        # Owners belong to their department's team even when their home
+        # profile points elsewhere (RK → Supply Chain AND 3rd Party Brands).
+        base = counts.get(key, 0)
+        if owner and not any(_owner_matches(owner, n) for n in names_by.get(key, [])):
+            base += 1
+        return base
 
     out, seen = [], set()
     for r in rows:
@@ -1337,17 +1389,17 @@ def org_structure(admin: dict = Depends(current_admin)):
         seen.add(key)
         out.append(
             {"id": r.id, "function": r.function, "department": r.department,
-             "leader": r.leader, "owner": r.owner, "members": counts.get(key, 0)}
+             "leader": r.leader, "owner": r.owner, "members": _count(key, r.owner)}
         )
     for key, cnt in counts.items():
         if key in seen:
             continue
+        own = own_by[key].most_common(1)[0][0] if own_by[key] else None
         out.append(
             {"id": None,
              "function": fn_by[key].most_common(1)[0][0] if fn_by[key] else None,
              "department": canonical[key], "leader": None,
-             "owner": own_by[key].most_common(1)[0][0] if own_by[key] else None,
-             "members": cnt}
+             "owner": own, "members": _count(key, own)}
         )
     out.sort(key=lambda r: r["department"].lower())
     return {
@@ -3234,6 +3286,7 @@ class ProgramIn(BaseModel):
     objective: Optional[str] = Field(default=None, max_length=2000)
     description: Optional[str] = Field(default=None, max_length=5000)
     owner_email: Optional[str] = None
+    department: Optional[str] = Field(default=None, max_length=255)
     eta: Optional[str] = None  # YYYY-MM-DD
 
 
@@ -3242,6 +3295,7 @@ class ProgramPatch(BaseModel):
     objective: Optional[str] = Field(default=None, max_length=2000)
     description: Optional[str] = Field(default=None, max_length=5000)
     owner_email: Optional[str] = None
+    department: Optional[str] = Field(default=None, max_length=255)
     eta: Optional[str] = None
     status: Optional[str] = None
     active: Optional[bool] = None
@@ -3273,6 +3327,7 @@ def _serialize_program(
         "description": p.description,
         "owner_email": p.owner_email,
         "owner_name": p.owner_name,
+        "department": p.department,
         "eta": p.eta.date().isoformat() if p.eta else None,
         "status": p.status,
         "active": bool(p.active),
@@ -3286,13 +3341,16 @@ def _serialize_program(
 def list_programs(
     limit: int = Query(default=10, le=50),
     offset: int = Query(default=0, ge=0),
+    department: Optional[str] = Query(default=None),
     admin: dict = Depends(current_admin),
 ):
     with SessionLocal() as db:
-        total = db.query(ProgramRow).count()
+        q = db.query(ProgramRow)
+        if department:
+            q = q.filter(ProgramRow.department == department)
+        total = q.count()
         rows = (
-            db.query(ProgramRow)
-            .order_by(ProgramRow.active.desc(), ProgramRow.eta.asc(), ProgramRow.id.asc())
+            q.order_by(ProgramRow.active.desc(), ProgramRow.eta.asc(), ProgramRow.id.asc())
             .offset(offset)
             .limit(limit)
             .all()
@@ -3338,6 +3396,7 @@ def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
             description=(payload.description or "").strip() or None,
             owner_email=owner_email,
             owner_name=owner_name,
+            department=(payload.department or "").strip() or None,
             eta=_parse_eta(payload.eta),
             status="not_started",
             created_by=admin["email"],
@@ -3402,6 +3461,9 @@ def patch_program(program_id: int, payload: ProgramPatch, admin: dict = Depends(
             edited = True
         if payload.owner_email is not None:
             row.owner_email, row.owner_name = _owner_fields(payload.owner_email or None)
+            edited = True
+        if payload.department is not None:
+            row.department = payload.department.strip() or None
             edited = True
         if payload.eta is not None:
             row.eta = _parse_eta(payload.eta)

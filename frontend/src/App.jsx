@@ -240,7 +240,7 @@ function Shell({ me, authFetch, logout }) {
   const [person, setPerson] = useState(null); // {actor, email, count}
   const [msgFocus, setMsgFocus] = useState(null); // {email, name} open a thread
   const [showPw, setShowPw] = useState(false); // change-my-password modal
-  const [teamOpen, setTeamOpen] = useState(false); // my-team panel
+  const [deptView, setDeptView] = useState(null); // department page
   const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
@@ -299,6 +299,13 @@ function Shell({ me, authFetch, logout }) {
   function openPerson(p) {
     setPerson(p);
     setView("live");
+  }
+
+  function openDept(d) {
+    setDeptView(d);
+    setView("dept");
+    setPeopleOpen(false);
+    setMenuOpen(false);
   }
 
   // Open the Messages tab; with a person, jump straight into their thread.
@@ -407,8 +414,8 @@ function Shell({ me, authFetch, logout }) {
           {me.department && (
             <button
               className="me-dept"
-              onClick={() => setTeamOpen(true)}
-              title={`See the ${me.department} team`}
+              onClick={() => openDept(me.department)}
+              title={`Open the ${me.department} department page`}
             >
               ({me.department})
             </button>
@@ -466,10 +473,7 @@ function Shell({ me, authFetch, logout }) {
           {me.department && (
             <button
               className="mm-item"
-              onClick={() => {
-                setTeamOpen(true);
-                setMenuOpen(false);
-              }}
+              onClick={() => openDept(me.department)}
             >
               👥 My team ({me.department})
             </button>
@@ -568,24 +572,22 @@ function Shell({ me, authFetch, logout }) {
           />
         ))}
       {view === "dash" && <Dashboard authFetch={authFetch} />}
-      {view === "users" && isSuper && <UsersAdmin authFetch={authFetch} me={me} />}
-      {showPw && <ChangePassword authFetch={authFetch} onClose={() => setShowPw(false)} />}
-      {teamOpen && (
-        <TeamPanel
-          department={me.department}
+      {view === "users" && isSuper && (
+        <UsersAdmin authFetch={authFetch} me={me} onOpenDept={openDept} />
+      )}
+      {view === "dept" && deptView && (
+        <DeptView
+          department={deptView}
           me={me}
+          admins={admins}
           authFetch={authFetch}
-          onClose={() => setTeamOpen(false)}
-          onOpenPerson={(name) => {
-            setTeamOpen(false);
-            openActor(name);
-          }}
-          onMessage={(p) => {
-            setTeamOpen(false);
-            openMessages(p);
-          }}
+          onActor={openActor}
+          onMessage={openMessages}
+          onBack={goHome}
         />
       )}
+      {showPw && <ChangePassword authFetch={authFetch} onClose={() => setShowPw(false)} />}
+
     </div>
   );
 }
@@ -1387,6 +1389,7 @@ function staleDays(p) {
 
 function Programs({ admins, authFetch }) {
   const [items, setItems] = useState([]);
+  const [depts, setDepts] = useState([]);
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -1397,6 +1400,7 @@ function Programs({ admins, authFetch }) {
     objective: "",
     description: "",
     owner_email: "",
+    department: "",
     eta: "",
   });
 
@@ -1414,6 +1418,14 @@ function Programs({ admins, authFetch }) {
   }, []);
 
   useEffect(() => load(PROG_PAGE), [load]);
+
+  useEffect(() => {
+    authFetch("/org/structure")
+      .then((r) => r.json())
+      .then((d) => setDepts(d.departments || []))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function loadMore() {
     if (loadingMore) return;
@@ -1440,11 +1452,12 @@ function Programs({ admins, authFetch }) {
         objective: form.objective || null,
         description: form.description || null,
         owner_email: form.owner_email || null,
+        department: form.department || null,
         eta: form.eta || null,
       }),
     }).catch(() => null);
     if (res && res.ok) {
-      setForm({ name: "", objective: "", description: "", owner_email: "", eta: "" });
+      setForm({ name: "", objective: "", description: "", owner_email: "", department: "", eta: "" });
       setShowNew(false);
       load(items.length + 1);
     }
@@ -1471,10 +1484,12 @@ function Programs({ admins, authFetch }) {
         items: visible.filter((p) => p.status === s),
       })).filter((g) => g.items.length);
     }
-    // owner
     const by = {};
     for (const p of visible) {
-      const k = p.owner_name || "Unassigned";
+      const k =
+        groupBy === "department"
+          ? p.department || "No department"
+          : p.owner_name || "Unassigned";
       (by[k] = by[k] || []).push(p);
     }
     return Object.entries(by)
@@ -1494,6 +1509,7 @@ function Programs({ admins, authFetch }) {
             ["none", "Urgency"],
             ["status", "Status"],
             ["owner", "Owner"],
+            ["department", "Department"],
           ].map(([v, l]) => (
             <button
               key={v}
@@ -1544,6 +1560,15 @@ function Programs({ admins, authFetch }) {
                 </option>
               ))}
             </select>
+            <select
+              value={form.department}
+              onChange={(e) => setForm({ ...form, department: e.target.value })}
+            >
+              <option value="">Department…</option>
+              {depts.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
             <input
               type="date"
               value={form.eta}
@@ -1565,6 +1590,7 @@ function Programs({ admins, authFetch }) {
               key={p.id}
               p={p}
               admins={admins}
+              depts={depts}
               onPatch={patch}
               onReload={() => load(items.length)}
               authFetch={authFetch}
@@ -1586,7 +1612,7 @@ function Programs({ admins, authFetch }) {
   );
 }
 
-function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
+function ProgramCard({ p, admins, depts = [], onPatch, onReload, authFetch }) {
   const [editing, setEditing] = useState(false);
   const [showUpdates, setShowUpdates] = useState(false);
   const [expandDesc, setExpandDesc] = useState(false);
@@ -1595,6 +1621,7 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
     objective: p.objective || "",
     description: p.description || "",
     owner_email: p.owner_email || "",
+    department: p.department || "",
     eta: p.eta || "",
   });
   const eta = etaInfo(p);
@@ -1607,6 +1634,7 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
       objective: edit.objective,
       description: edit.description,
       owner_email: edit.owner_email,
+      department: edit.department,
       eta: edit.eta || null,
     });
     setEditing(false);
@@ -1667,6 +1695,7 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
         ) : (
           <span className="muted">no owner</span>
         )}
+        {p.department && <span className="chip chip-order">{p.department}</span>}
         <span className="prog-actions">
           <button
             className="link prog-add-update"
@@ -1719,6 +1748,18 @@ function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
                   {a.name || a.email}
                 </option>
               ))}
+            </select>
+            <select
+              value={edit.department}
+              onChange={(e) => setEdit({ ...edit, department: e.target.value })}
+            >
+              <option value="">Department…</option>
+              {depts.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+              {edit.department && !depts.includes(edit.department) && (
+                <option value={edit.department}>{edit.department}</option>
+              )}
             </select>
             <input
               type="date"
@@ -2570,63 +2611,180 @@ function ChangePassword({ authFetch, onClose }) {
   );
 }
 
-// My team: everyone in a department, with jump-to-page and message shortcuts.
-function TeamPanel({ department, me, authFetch, onClose, onOpenPerson, onMessage }) {
-  const [team, setTeam] = useState({ department, members: [] });
-  const [loaded, setLoaded] = useState(false);
+// Department page: the team + the department's programs (its goals).
+function DeptView({ department, me, admins, authFetch, onActor, onMessage, onBack }) {
+  const [team, setTeam] = useState({ owner: null, members: [] });
+  const [meta, setMeta] = useState(null);
+  const [progs, setProgs] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [showNew, setShowNew] = useState(false);
+  const [form, setForm] = useState({ name: "", objective: "", owner_email: "", eta: "" });
 
-  useEffect(() => {
-    authFetch(`/org/team?department=${encodeURIComponent(department || "")}`)
+  const load = useCallback(() => {
+    authFetch(`/org/team?department=${encodeURIComponent(department)}`)
+      .then((r) => r.json())
+      .then((d) => setTeam(d && d.members ? d : { owner: null, members: [] }))
+      .catch(() => {});
+    authFetch(`/programs?limit=50&department=${encodeURIComponent(department)}`)
       .then((r) => r.json())
       .then((d) => {
-        setTeam(d && d.members ? d : { department, members: [] });
-        setLoaded(true);
+        setProgs(d.programs || []);
+        setTotal(d.total || 0);
       })
-      .catch(() => setLoaded(true));
+      .catch(() => {});
+    authFetch("/org/structure")
+      .then((r) => r.json())
+      .then((d) => setMeta((d.rows || []).find((r) => r.department === department) || null))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [department]);
 
+  useEffect(load, [load]);
+
+  async function patch(id, body) {
+    const res = await authFetch(`/programs/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    if (res && res.ok) load();
+  }
+
+  async function create(e) {
+    e.preventDefault();
+    if (!form.name.trim()) return;
+    const res = await authFetch("/programs", {
+      method: "POST",
+      body: JSON.stringify({
+        name: form.name.trim(),
+        objective: form.objective || null,
+        owner_email: form.owner_email || null,
+        eta: form.eta || null,
+        department,
+      }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setForm({ name: "", objective: "", owner_email: "", eta: "" });
+      setShowNew(false);
+      load();
+    }
+  }
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal team-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <strong>👥 {team.department || "My team"}</strong>
-          <button className="link" onClick={onClose}>✕</button>
-        </div>
-        <div className="team-list">
-          {team.members.map((m) => (
-            <div key={m.email} className="team-row">
-              <span className="avatar sm" style={{ background: actorColor(m.name) }}>
-                {initials(m.name)}
-              </span>
-              <button className="team-name" onClick={() => onOpenPerson(m.name)}>
+    <main className="hub dept-hub">
+      <div className="conv-head">
+        <button className="link conv-back" onClick={onBack}>
+          ← Live
+        </button>
+        <strong className="dept-title">🏛 {department}</strong>
+        {meta?.function && <span className="chip chip-people">{meta.function}</span>}
+      </div>
+      <div className="muted dept-meta">
+        {meta?.leader ? `Lead: ${meta.leader} · ` : ""}
+        Owner: {team.owner || meta?.owner || "—"} · {team.members.length} member
+        {team.members.length === 1 ? "" : "s"}
+      </div>
+
+      <div className="card dept-team">
+        {team.members.map((m) => (
+          <div key={m.email || m.name} className="team-row">
+            <span className="avatar sm" style={{ background: actorColor(m.name) }}>
+              {initials(m.name)}
+            </span>
+            {m.email ? (
+              <button className="team-name" onClick={() => onActor(m.name)}>
                 {m.name}
                 {m.email.toLowerCase() === (me.email || "").toLowerCase() && " (you)"}
               </button>
-              {m.sub_department && <span className="muted team-sub">{m.sub_department}</span>}
-              {m.email.toLowerCase() !== (me.email || "").toLowerCase() && (
-                <button
-                  className="link team-msg"
-                  title={`Message ${m.name}`}
-                  onClick={() => onMessage({ email: m.email, name: m.name })}
-                >
-                  ✉
-                </button>
-              )}
-            </div>
-          ))}
-          {loaded && team.members.length === 0 && (
-            <div className="empty">
-              No team members mapped yet — departments come from the ownership sheet.
-            </div>
-          )}
-        </div>
+            ) : (
+              <span className="team-name">{m.name}</span>
+            )}
+            {m.is_owner && <span className="feed-roster-owner"> (owner)</span>}
+            {m.sub_department && <span className="muted team-sub">{m.sub_department}</span>}
+            {m.email && m.email.toLowerCase() !== (me.email || "").toLowerCase() && (
+              <button
+                className="link team-msg"
+                title={`Message ${m.name}`}
+                onClick={() => onMessage({ email: m.email, name: m.name })}
+              >
+                ✉
+              </button>
+            )}
+          </div>
+        ))}
+        {team.members.length === 0 && (
+          <div className="empty">No members mapped yet.</div>
+        )}
       </div>
-    </div>
+
+      <div className="hub-head">
+        <strong>📌 Programs &amp; goals · {total}</strong>
+        <button onClick={() => setShowNew(!showNew)}>
+          {showNew ? "Cancel" : "+ New program"}
+        </button>
+      </div>
+      {showNew && (
+        <form className="card prog-form" onSubmit={create}>
+          <input
+            autoFocus
+            placeholder={`Program / goal for ${department}…`}
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
+          <input
+            placeholder="Objective — what does success look like?"
+            value={form.objective}
+            onChange={(e) => setForm({ ...form, objective: e.target.value })}
+          />
+          <div className="prog-form-row">
+            <select
+              value={form.owner_email}
+              onChange={(e) => setForm({ ...form, owner_email: e.target.value })}
+            >
+              <option value="">Owner…</option>
+              {admins.map((a) => (
+                <option key={a.email} value={a.email}>
+                  {a.name || a.email}
+                </option>
+              ))}
+            </select>
+            <select
+              value={form.department}
+              onChange={(e) => setForm({ ...form, department: e.target.value })}
+            >
+              <option value="">Department…</option>
+              {depts.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={form.eta}
+              onChange={(e) => setForm({ ...form, eta: e.target.value })}
+            />
+            <button type="submit">Create</button>
+          </div>
+        </form>
+      )}
+      {progs
+        .filter((p) => p.active)
+        .map((p) => (
+          <ProgramCard
+            key={p.id}
+            p={p}
+            admins={admins}
+            onPatch={patch}
+            onReload={load}
+            authFetch={authFetch}
+          />
+        ))}
+      {progs.filter((p) => p.active).length === 0 && (
+        <div className="empty">No programs for this department yet — add the first goal.</div>
+      )}
+    </main>
   );
 }
 
-function UsersAdmin({ authFetch, me }) {
+function UsersAdmin({ authFetch, me, onOpenDept }) {
   const [users, setUsers] = useState([]);
   const [defaultPw, setDefaultPw] = useState("Welcome@123");
   const [structure, setStructure] = useState({ rows: [], functions: [], departments: [] });
@@ -2706,11 +2864,7 @@ function UsersAdmin({ authFetch, me }) {
           structure={structure}
           authFetch={authFetch}
           onChanged={load}
-          onPickDept={(d) => {
-            setDeptFilter(d);
-            setQ("");
-            setShowOrg(false);
-          }}
+          onPickDept={(d) => (onOpenDept ? onOpenDept(d) : setDeptFilter(d))}
         />
       )}
 
@@ -3202,28 +3356,24 @@ const PORTAL_TABS = [
 // Lean roster for the picked department: comma-separated linked names,
 // owner tagged — so everyone knows who belongs where.
 function DeptRoster({ team, onActor }) {
-  const owner = (team.owner || "").trim().toLowerCase();
-  const isOwner = (m) =>
-    owner &&
-    (m.name.toLowerCase() === owner || m.name.toLowerCase().startsWith(owner));
-  const ordered = [...team.members].sort(
-    (a, b) => (isOwner(b) ? 1 : 0) - (isOwner(a) ? 1 : 0)
-  );
-  const ownerListed = ordered.some(isOwner);
+  const members = team.members || [];
   return (
     <div className="feed-roster">
       👥{" "}
-      {!ownerListed && team.owner && <span>owner: {team.owner} · </span>}
-      {ordered.map((m, i) => (
-        <span key={m.email}>
-          <button className="feed-roster-name" onClick={() => onActor(m.name)}>
-            {m.name}
-          </button>
-          {isOwner(m) && <span className="feed-roster-owner"> (owner)</span>}
-          {i < ordered.length - 1 && ", "}
+      {members.map((m, i) => (
+        <span key={m.email || m.name}>
+          {m.email ? (
+            <button className="feed-roster-name" onClick={() => onActor(m.name)}>
+              {m.name}
+            </button>
+          ) : (
+            <span>{m.name}</span>
+          )}
+          {m.is_owner && <span className="feed-roster-owner"> (owner)</span>}
+          {i < members.length - 1 && ", "}
         </span>
       ))}
-      {team.members.length === 0 && <span>no members mapped yet</span>}
+      {members.length === 0 && <span>no members mapped yet</span>}
     </div>
   );
 }

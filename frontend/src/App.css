@@ -2972,3 +2972,20 @@ button.link {
   color: #475569;
   white-space: nowrap;
 }
+
+/* ---- Department page ---- */
+.dept-title {
+  font-size: 1.05rem;
+}
+
+.dept-meta {
+  font-size: 0.84rem;
+  padding: 0 2px;
+}
+
+.dept-team {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+}
