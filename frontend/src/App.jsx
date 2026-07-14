@@ -149,6 +149,7 @@ export default function App() {
             is_super: !!d.is_super,
             department: d.department || null,
             function: d.function || null,
+            owns: d.owns || [],
           };
           setMe(next);
           localStorage.setItem("me", JSON.stringify(next));
