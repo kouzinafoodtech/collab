@@ -2944,3 +2944,31 @@ button.link {
   color: var(--muted);
   font-size: 0.76rem;
 }
+
+/* Org rows: department-first layout */
+.org-dept-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--brand);
+  cursor: pointer;
+  text-align: left;
+}
+
+.org-dept-btn:hover {
+  text-decoration: underline;
+  filter: none;
+}
+
+.org-fn-lbl {
+  font-size: 0.8rem;
+}
+
+.org-members {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #475569;
+  white-space: nowrap;
+}

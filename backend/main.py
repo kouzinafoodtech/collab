@@ -1306,28 +1306,54 @@ class OrgDeptIn(BaseModel):
 
 @api.get("/org/structure")
 def org_structure(admin: dict = Depends(current_admin)):
-    """Org chart rows + distinct department list (feeds dropdowns + feed filter).
-    Readable by all admins; editing is superadmin-only."""
+    """Org chart = UNION of curated structure rows and departments that exist
+    only on people's profiles (so a people-sheet department like "Partner
+    Relationship & Program Management" still shows, with function/owner
+    inferred from its members). Every row carries a member count. Readable by
+    all admins; editing is superadmin-only."""
+    from collections import Counter, defaultdict
+
     with SessionLocal() as db:
-        rows = (
-            db.query(OrgDeptRow)
-            .filter(OrgDeptRow.active == 1)
-            .order_by(OrgDeptRow.function, OrgDeptRow.department)
+        rows = db.query(OrgDeptRow).filter(OrgDeptRow.active == 1).all()
+        profs = (
+            db.query(UserProfileRow.department, UserProfileRow.function, UserProfileRow.owner)
+            .filter(UserProfileRow.department.isnot(None))
             .all()
         )
-        prof_depts = {
-            d for (d,) in db.query(UserProfileRow.department)
-            .filter(UserProfileRow.department.isnot(None)).distinct()
-        }
-    departments = sorted(prof_depts | {r.department for r in rows})
-    return {
-        "rows": [
+    counts: Counter = Counter()
+    fn_by, own_by, canonical = defaultdict(Counter), defaultdict(Counter), {}
+    for dept, fn, own in profs:
+        key = dept.strip().lower()
+        counts[key] += 1
+        canonical.setdefault(key, dept.strip())
+        if fn:
+            fn_by[key][fn.strip()] += 1
+        if own:
+            own_by[key][own.strip()] += 1
+
+    out, seen = [], set()
+    for r in rows:
+        key = r.department.strip().lower()
+        seen.add(key)
+        out.append(
             {"id": r.id, "function": r.function, "department": r.department,
-             "leader": r.leader, "owner": r.owner}
-            for r in rows
-        ],
-        "functions": sorted({r.function for r in rows}),
-        "departments": departments,
+             "leader": r.leader, "owner": r.owner, "members": counts.get(key, 0)}
+        )
+    for key, cnt in counts.items():
+        if key in seen:
+            continue
+        out.append(
+            {"id": None,
+             "function": fn_by[key].most_common(1)[0][0] if fn_by[key] else None,
+             "department": canonical[key], "leader": None,
+             "owner": own_by[key].most_common(1)[0][0] if own_by[key] else None,
+             "members": cnt}
+        )
+    out.sort(key=lambda r: r["department"].lower())
+    return {
+        "rows": out,
+        "functions": sorted({r["function"] for r in out if r["function"]}),
+        "departments": sorted({r["department"] for r in out}),
         "is_super": is_superadmin(admin["email"]),
     }
 

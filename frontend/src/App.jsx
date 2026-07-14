@@ -2706,6 +2706,11 @@ function UsersAdmin({ authFetch, me }) {
           structure={structure}
           authFetch={authFetch}
           onChanged={load}
+          onPickDept={(d) => {
+            setDeptFilter(d);
+            setQ("");
+            setShowOrg(false);
+          }}
         />
       )}
 
@@ -2904,9 +2909,9 @@ function EditUserForm({ user, structure, onSave, onCancel }) {
   );
 }
 
-function OrgStructure({ structure, authFetch, onChanged }) {
+function OrgStructure({ structure, authFetch, onChanged, onPickDept }) {
   const [f, setF] = useState({ function: "", department: "", leader: "", owner: "" });
-  const [editId, setEditId] = useState(null);
+  const [editKey, setEditKey] = useState(null); // row id or "new:<dept>"
   const [edit, setEdit] = useState({});
 
   async function add(e) {
@@ -2922,13 +2927,22 @@ function OrgStructure({ structure, authFetch, onChanged }) {
     }
   }
 
-  async function save(id) {
-    const res = await authFetch(`/org/structure/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(edit),
-    }).catch(() => null);
+  // Rows straight from the people sheet have no structure record yet (id null)
+  // — saving one creates it.
+  async function save(row) {
+    const body = {
+      function: (edit.function || "").trim() || "—",
+      department: (edit.department || "").trim(),
+      leader: edit.leader || null,
+      owner: edit.owner || null,
+    };
+    if (!body.department) return;
+    const res = await authFetch(
+      row.id ? `/org/structure/${row.id}` : "/org/structure",
+      { method: row.id ? "PATCH" : "POST", body: JSON.stringify(body) }
+    ).catch(() => null);
     if (res && res.ok) {
-      setEditId(null);
+      setEditKey(null);
       onChanged();
     }
   }
@@ -2939,14 +2953,16 @@ function OrgStructure({ structure, authFetch, onChanged }) {
     onChanged();
   }
 
+  const keyOf = (r) => r.id || `new:${r.department}`;
+
   return (
     <div className="card org-card">
       <strong>🏛 Functions & Departments</strong>
       <form className="prog-form-row org-add" onSubmit={add}>
-        <input placeholder="Function" value={f.function}
-          onChange={(e) => setF({ ...f, function: e.target.value })} />
         <input placeholder="Department" value={f.department}
           onChange={(e) => setF({ ...f, department: e.target.value })} />
+        <input placeholder="Function" value={f.function}
+          onChange={(e) => setF({ ...f, function: e.target.value })} />
         <input placeholder="Leader" value={f.leader}
           onChange={(e) => setF({ ...f, leader: e.target.value })} />
         <input placeholder="Owner" value={f.owner}
@@ -2955,30 +2971,41 @@ function OrgStructure({ structure, authFetch, onChanged }) {
       </form>
       <div className="org-rows">
         {structure.rows.map((r) =>
-          editId === r.id ? (
-            <div key={r.id} className="org-row">
-              <input value={edit.function} onChange={(e) => setEdit({ ...edit, function: e.target.value })} />
-              <input value={edit.department} onChange={(e) => setEdit({ ...edit, department: e.target.value })} />
+          editKey === keyOf(r) ? (
+            <div key={keyOf(r)} className="org-row">
+              <input value={edit.department} placeholder="Department" onChange={(e) => setEdit({ ...edit, department: e.target.value })} />
+              <input value={edit.function || ""} placeholder="Function" onChange={(e) => setEdit({ ...edit, function: e.target.value })} />
               <input value={edit.leader || ""} placeholder="Leader" onChange={(e) => setEdit({ ...edit, leader: e.target.value })} />
               <input value={edit.owner || ""} placeholder="Owner" onChange={(e) => setEdit({ ...edit, owner: e.target.value })} />
-              <button onClick={() => save(r.id)}>Save</button>
-              <button className="link" onClick={() => setEditId(null)}>cancel</button>
+              <button onClick={() => save(r)}>Save</button>
+              <button className="link" onClick={() => setEditKey(null)}>cancel</button>
             </div>
           ) : (
-            <div key={r.id} className="org-row">
-              <span className="org-fn">{r.function}</span>
-              <span className="org-dept">{r.department}</span>
+            <div key={keyOf(r)} className="org-row">
+              <button
+                className="org-dept-btn"
+                title={`Show ${r.department} members`}
+                onClick={() => onPickDept(r.department)}
+              >
+                {r.department}
+              </button>
+              <span className="muted org-fn-lbl">{r.function || "—"}</span>
               <span className="muted">lead: {r.leader || "—"}</span>
               <span className="muted">owner: {r.owner || "—"}</span>
+              <span className="org-members" title="Team members (incl. owner)">
+                👥 {r.members}
+              </span>
               <span className="org-actions">
-                <button className="link" onClick={() => { setEditId(r.id); setEdit(r); }}>edit</button>
-                <button className="link" onClick={() => remove(r.id)}>remove</button>
+                <button className="link" onClick={() => { setEditKey(keyOf(r)); setEdit(r); }}>edit</button>
+                {r.id && (
+                  <button className="link" onClick={() => remove(r.id)}>remove</button>
+                )}
               </span>
             </div>
           )
         )}
         {structure.rows.length === 0 && (
-          <div className="empty">No departments yet — add above or import the sheet.</div>
+          <div className="empty">No departments yet — add above.</div>
         )}
       </div>
     </div>
