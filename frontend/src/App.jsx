@@ -245,6 +245,7 @@ function Shell({ me, authFetch, logout }) {
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
   const [admins, setAdmins] = useState([]);
+  const [team, setTeam] = useState([]); // my department's members
   const [redflags, setRedflags] = useState({ total: 0, rules: [] });
   const [overview, setOverview] = useState({
     program_owners: [],
@@ -270,6 +271,19 @@ function Shell({ me, authFetch, logout }) {
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // My department's members power the "My team · 12h" rail.
+  useEffect(() => {
+    if (!me.department) {
+      setTeam([]);
+      return;
+    }
+    authFetch(`/org/team?department=${encodeURIComponent(me.department)}`)
+      .then((r) => r.json())
+      .then((d) => setTeam(d.members || []))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me.department]);
 
   useEffect(() => {
     loadBoard();
@@ -340,7 +354,7 @@ function Shell({ me, authFetch, logout }) {
             className={`tab ${view === "redflags" ? "active" : ""}`}
             onClick={() => setView("redflags")}
           >
-            🚩 Red Flags
+            🚩 Flags
             {redflags.total > 0 && <span className="tab-badge">{redflags.total}</span>}
           </button>
           <button
@@ -418,7 +432,7 @@ function Shell({ me, authFetch, logout }) {
         <nav className="mobile-menu">
           {[
             ["live", "🔴 Live"],
-            ["redflags", `🚩 Red Flags${redflags.total ? ` (${redflags.total})` : ""}`],
+            ["redflags", `🚩 Flags${redflags.total ? ` (${redflags.total})` : ""}`],
             ["programs", "📌 Programs"],
             ["feedback", "🎭 Feedback"],
             ["messages", "💬 Messages"],
@@ -506,6 +520,8 @@ function Shell({ me, authFetch, logout }) {
           <Sidebar
             board={board}
             admins={admins}
+            team={team}
+            teamName={me.department}
             overview={overview}
             selected={person?.actor}
             open={peopleOpen}
@@ -670,6 +686,8 @@ function DashRail({ overview, open, onOpenMessages, onOpenFeedback }) {
 function Sidebar({
   board,
   admins,
+  team,
+  teamName,
   overview,
   selected,
   open,
@@ -690,11 +708,17 @@ function Sidebar({
     .sort((x, y) => x.name.localeCompare(y.name));
   const shownOwners = moreOwners ? [...owners, ...zeroOwners] : owners;
 
-  // Leadership: every admin ranked by 12h activity (busiest first).
   const counts = Object.fromEntries(board.map((b) => [b.actor, b.count]));
+
+  // My team with 12h activity counts — how the people around you are doing.
+  // Falls back to the all-admins leadership list when no department is mapped.
+  const teamEntries = (team || [])
+    .map((m) => ({ actor: m.name, email: m.email, count: counts[m.name] || 0 }))
+    .sort((x, y) => y.count - x.count || x.actor.localeCompare(y.actor));
   const leaders = admins
     .map((a) => ({ actor: a.name || a.email, email: a.email, count: counts[a.name] || 0 }))
     .sort((x, y) => y.count - x.count || x.actor.localeCompare(y.actor));
+  const showTeam = teamEntries.length > 0;
   const shownLeaders = moreLead ? leaders : leaders.slice(0, 12);
 
   return (
@@ -731,9 +755,11 @@ function Sidebar({
       </div>
 
       <div className="lb-section">
-        <div className="lb-title">Leadership · 12h</div>
+        <div className="lb-title">
+          {showTeam ? `My team · 12h` : "Leadership · 12h"}
+        </div>
         <div className="lb-list">
-          {shownLeaders.map((p, i) => (
+          {(showTeam ? teamEntries : shownLeaders).map((p, i) => (
             <PersonRow
               key={p.email}
               entry={p}
@@ -742,9 +768,9 @@ function Sidebar({
               onClick={() => (selected === p.actor ? onClear() : onSelect(p))}
             />
           ))}
-          {leaders.length === 0 && <div className="empty">No admins.</div>}
+          {!showTeam && leaders.length === 0 && <div className="empty">No admins.</div>}
         </div>
-        {leaders.length > 12 && (
+        {!showTeam && leaders.length > 12 && (
           <button className="link lb-more" onClick={() => setMoreLead(!moreLead)}>
             {moreLead ? "show less" : `show all ${leaders.length}`}
           </button>
@@ -2609,9 +2635,6 @@ function UsersAdmin({ authFetch, me }) {
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState(null); // email being edited
   const [status, setStatus] = useState("");
-  const [importPlan, setImportPlan] = useState(null);
-  const [importFile, setImportFile] = useState(null);
-  const [importing, setImporting] = useState(false);
   const [showOrg, setShowOrg] = useState(false);
 
   const load = useCallback(() => {
@@ -2657,39 +2680,6 @@ function UsersAdmin({ authFetch, me }) {
     setStatus(res && res.ok ? `Password for ${email} reset to ${defaultPw} ✓` : errText(d, "Reset failed"));
   }
 
-  async function runImport(apply) {
-    if (!importFile) return;
-    setImporting(true);
-    setStatus("");
-    const fd = new FormData();
-    fd.append("file", importFile);
-    try {
-      const res = await authFetch(`/org/import?apply=${apply ? "true" : "false"}`, {
-        method: "POST",
-        body: fd,
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setStatus(errText(d, "Import failed"));
-      } else {
-        setImportPlan(d);
-        if (d.applied) {
-          const fails = (d.failed || []).length;
-          setStatus(
-            `Imported: ${d.created} created, ${d.profiles_updated} profiles updated` +
-              (fails ? ` — ⚠ ${fails} failed: ${d.failed[0].error}` : " ✓")
-          );
-          setImportFile(null);
-          load();
-        }
-      }
-    } catch {
-      setStatus("Import failed");
-    } finally {
-      setImporting(false);
-    }
-  }
-
   const ql = q.trim().toLowerCase();
   const visible = users.filter((u) => {
     if (deptFilter && u.department !== deptFilter) return false;
@@ -2704,69 +2694,12 @@ function UsersAdmin({ authFetch, me }) {
         <button onClick={() => setShowNew(!showNew)}>
           {showNew ? "Cancel" : "+ New user"}
         </button>
-        <label className="import-btn chip-toggle">
-          📄 {importFile ? importFile.name : "Import ownership.xlsx"}
-          <input
-            type="file"
-            accept=".xlsx"
-            hidden
-            onClick={(e) => {
-              e.target.value = "";
-            }}
-            onChange={(e) => {
-              setImportPlan(null);
-              setImportFile(e.target.files?.[0] || null);
-            }}
-          />
-        </label>
-        {importFile && !importPlan?.applied && (
-          <button onClick={() => runImport(false)} disabled={importing}>
-            {importing ? "Reading…" : "Preview import"}
-          </button>
-        )}
         <button className="chip-toggle" onClick={() => setShowOrg(!showOrg)}>
           🏛 Departments ({structure.rows.length})
         </button>
       </div>
 
-      <div className="muted users-note">
-        Accounts live in PartnerKart (same login). New users get the default
-        password <code>{defaultPw}</code> and <strong>no KPK access</strong> —
-        permissions stay managed in KPK. They can sign in to Kouzina Live right away.
-      </div>
       {status && <div className="users-status">{status}</div>}
-
-      {importPlan && !importPlan.applied && (
-        <div className="card import-preview">
-          <strong>Import preview</strong>
-          <div className="import-stats">
-            <span>{importPlan.people_in_file} people in file</span>
-            <span>{importPlan.matched_existing} already admins (profile update)</span>
-            <span className="import-new">{importPlan.will_create.length} new users to create</span>
-            <span>{importPlan.departments_in_file} org rows</span>
-            {(importPlan.skipped_invalid || []).length > 0 && (
-              <span title={importPlan.skipped_invalid.join(", ")}>
-                ⚠ {importPlan.skipped_invalid.length} skipped (bad email)
-              </span>
-            )}
-          </div>
-          {importPlan.will_create.length > 0 && (
-            <div className="import-list">
-              {importPlan.will_create.map((p) => (
-                <span key={p.email} className="chip chip-other" title={p.department || ""}>
-                  {p.name || p.email}
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="import-actions">
-            <button onClick={() => runImport(true)} disabled={importing}>
-              {importing ? "Applying…" : `Apply — create ${importPlan.will_create.length} users`}
-            </button>
-            <button className="link" onClick={() => setImportPlan(null)}>cancel</button>
-          </div>
-        </div>
-      )}
 
       {showOrg && (
         <OrgStructure
@@ -2906,7 +2839,7 @@ function NewUserForm({ structure, defaultPw, authFetch, onDone }) {
         <button type="submit">Create</button>
       </div>
       <div className="muted">
-        Signs in with <code>{defaultPw}</code> · no KPK modules · active immediately.
+        Signs in with the company default password · no KPK modules · active immediately.
       </div>
       {err && <p className="error">{err}</p>}
     </form>
