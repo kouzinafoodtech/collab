@@ -3009,12 +3009,18 @@ function TasksView({ me, admins, authFetch, onBack }) {
   );
 }
 
-// Compose (gmail-style): pick department → person in it → subject/details/due.
+// Compose (gmail-style): department → person → subject/details/due, and for
+// department owners a repeat option that creates a recurring task.
 function ComposeTask({ me, admins, depts, authFetch, onClose, onSent }) {
   const [dept, setDept] = useState(me.department || "");
   const [members, setMembers] = useState([]);
-  const [f, setF] = useState({ assignee_email: "", title: "", notes: "", cutoff_date: "" });
+  const [f, setF] = useState({
+    assignee_email: "", title: "", notes: "", cutoff_date: "", repeat: "once",
+  });
   const [err, setErr] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const canRecur = me.is_super || (me.owns || []).includes(dept);
 
   useEffect(() => {
     if (!dept) {
@@ -3031,29 +3037,50 @@ function ComposeTask({ me, admins, depts, authFetch, onClose, onSent }) {
   async function send(e) {
     e.preventDefault();
     setErr("");
-    if (!f.title.trim() || !f.assignee_email) {
-      setErr("Pick a person and give the task a subject");
-      return;
+    if (!f.assignee_email) return setErr("Pick who the task is for");
+    if (!f.title.trim()) return setErr("Give the task a subject");
+    setSending(true);
+    let res;
+    if (f.repeat === "once") {
+      res = await authFetch("/tasks", {
+        method: "POST",
+        body: JSON.stringify({
+          title: f.title.trim(),
+          assignee_email: f.assignee_email,
+          cutoff_date: f.cutoff_date || null,
+          notes: f.notes || null,
+          department: dept || null,
+        }),
+      }).catch(() => null);
+    } else {
+      const due = f.cutoff_date ? new Date(f.cutoff_date) : null;
+      const step = { quarterly: 3, half_yearly: 6, yearly: 12 }[f.repeat];
+      const due_months =
+        step && due
+          ? Array.from({ length: 12 / step }, (_, k) =>
+              ((due.getMonth() + k * step) % 12) + 1
+            ).join(",")
+          : null;
+      res = await authFetch("/tasks/templates", {
+        method: "POST",
+        body: JSON.stringify({
+          title: f.title.trim(),
+          assignee_email: f.assignee_email,
+          department: dept || null,
+          frequency: f.repeat,
+          cutoff_day: due ? due.getDate() : null,
+          due_months,
+          notes: f.notes || null,
+        }),
+      }).catch(() => null);
     }
-    const res = await authFetch("/tasks", {
-      method: "POST",
-      body: JSON.stringify({
-        title: f.title.trim(),
-        assignee_email: f.assignee_email,
-        cutoff_date: f.cutoff_date || null,
-        notes: f.notes || null,
-        department: dept || null,
-      }),
-    }).catch(() => null);
+    setSending(false);
     if (res && res.ok) onSent();
     else {
       const d = res ? await res.json().catch(() => ({})) : {};
       setErr(errText(d, "Could not send the task"));
     }
   }
-
-  const memberEmails = new Set(members.map((m) => m.email.toLowerCase()));
-  const others = admins.filter((a) => !memberEmails.has(a.email.toLowerCase()));
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -3062,41 +3089,101 @@ function ComposeTask({ me, admins, depts, authFetch, onClose, onSent }) {
           <strong>✏️ New task</strong>
           <button className="link" onClick={onClose}>✕</button>
         </div>
-        <form className="pw-form" onSubmit={send}>
-          <select value={dept} onChange={(e) => { setDept(e.target.value); setF({ ...f, assignee_email: "" }); }}>
-            <option value="">Department…</option>
-            {depts.map((d) => (
-              <option key={d} value={d}>{d}</option>
-            ))}
-          </select>
-          <select
-            value={f.assignee_email}
-            onChange={(e) => setF({ ...f, assignee_email: e.target.value })}
-          >
-            <option value="">To…</option>
-            {members.map((m) => (
-              <option key={m.email} value={m.email}>{m.name}</option>
-            ))}
-            {dept && others.length > 0 && <option disabled>── others ──</option>}
-            {(dept ? others : admins).map((a) => (
-              <option key={a.email} value={a.email}>{a.name || a.email}</option>
-            ))}
-          </select>
-          <input
-            placeholder="Subject…" value={f.title}
-            onChange={(e) => setF({ ...f, title: e.target.value })}
-          />
-          <textarea
-            rows={3} placeholder="Details (optional)…" value={f.notes}
-            onChange={(e) => setF({ ...f, notes: e.target.value })}
-          />
-          <input
-            type="date" value={f.cutoff_date}
-            onChange={(e) => setF({ ...f, cutoff_date: e.target.value })}
-          />
-          <button type="submit">Send task</button>
+        <form className="compose-form" onSubmit={send}>
+          <div className="compose-grid">
+            <label className="compose-field">
+              <span className="compose-lbl">Department</span>
+              <select
+                value={dept}
+                onChange={(e) => {
+                  setDept(e.target.value);
+                  setF({ ...f, assignee_email: "" });
+                }}
+              >
+                <option value="">Choose…</option>
+                {depts.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </label>
+            <label className="compose-field">
+              <span className="compose-lbl">To</span>
+              <select
+                value={f.assignee_email}
+                onChange={(e) => setF({ ...f, assignee_email: e.target.value })}
+              >
+                <option value="">Choose…</option>
+                {members.map((m) => (
+                  <option key={m.email} value={m.email}>{m.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="compose-field">
+            <span className="compose-lbl">Subject</span>
+            <input
+              autoFocus
+              placeholder="What needs to be done…"
+              value={f.title}
+              onChange={(e) => setF({ ...f, title: e.target.value })}
+            />
+          </label>
+          <label className="compose-field">
+            <span className="compose-lbl">Details <em>(optional)</em></span>
+            <textarea
+              rows={3}
+              placeholder="Context, links, expectations…"
+              value={f.notes}
+              onChange={(e) => setF({ ...f, notes: e.target.value })}
+            />
+          </label>
+          <div className="compose-grid">
+            <label className="compose-field">
+              <span className="compose-lbl">Due date</span>
+              <input
+                type="date"
+                value={f.cutoff_date}
+                onChange={(e) => setF({ ...f, cutoff_date: e.target.value })}
+              />
+            </label>
+            <label className="compose-field">
+              <span className="compose-lbl">Repeat</span>
+              <select
+                value={f.repeat}
+                onChange={(e) => setF({ ...f, repeat: e.target.value })}
+                disabled={!canRecur && f.repeat === "once"}
+              >
+                <option value="once">One-time</option>
+                {canRecur && (
+                  <>
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="half_yearly">Half-yearly</option>
+                    <option value="yearly">Yearly</option>
+                  </>
+                )}
+              </select>
+            </label>
+          </div>
+          {f.repeat !== "once" && (
+            <div className="muted compose-hint">
+              🔁 Repeats {f.repeat.replace("_", " ")}
+              {f.cutoff_date
+                ? ` — due day ${new Date(f.cutoff_date).getDate()} of each cycle`
+                : " — pick a due date to set the monthly cutoff day"}
+            </div>
+          )}
+          <button type="submit" disabled={sending}>
+            {sending ? "Sending…" : f.repeat === "once" ? "Send task" : "Create recurring task"}
+          </button>
           {err && <p className="error">{err}</p>}
-          <div className="muted">They'll get a message and email right away.</div>
+          <div className="muted compose-hint">
+            {f.assignee_email
+              ? "They'll get a message and email right away."
+              : "The assignee is notified by message and email."}
+          </div>
         </form>
       </div>
     </div>

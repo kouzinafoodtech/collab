@@ -2246,18 +2246,33 @@ def add_task_template(payload: TemplateTaskIn, admin: dict = Depends(current_adm
     dept = (payload.department or "").strip() or _my_department(admin["email"])
     if not _can_manage_tasks(admin, dept):
         raise HTTPException(status_code=403, detail="Only department owners manage recurring tasks")
+    assignee = _norm_email(payload.assignee_email)
+    freq = _norm_freq(payload.frequency)
     with SessionLocal() as db:
         row = TaskTemplateRow(
-            title=payload.title.strip(), assignee_email=_norm_email(payload.assignee_email),
+            title=payload.title.strip(), assignee_email=assignee,
             department=dept, company=(payload.company or "").strip() or None,
             support_by=(payload.support_by or "").strip() or None,
-            frequency=_norm_freq(payload.frequency), cutoff_day=payload.cutoff_day,
+            frequency=freq, cutoff_day=payload.cutoff_day,
             due_months=(payload.due_months or "").strip() or None,
             notes=(payload.notes or "").strip() or None, created_by=admin["email"],
         )
         db.add(row)
         db.commit()
-        return {"ok": True, "id": row.id}
+        rid = row.id
+    who = admin.get("name") or admin["email"]
+    if _norm_email(admin["email"]) != assignee:
+        note = (
+            f"🔁 Recurring task set up for you: “{payload.title.strip()}” "
+            f"({freq.replace('_', ' ')}"
+            + (f", due day {payload.cutoff_day}" if payload.cutoff_day else "")
+            + f") — by {who}"
+        )
+        with SessionLocal() as db:
+            db.add(MessageRow(sender=admin["email"], recipient=assignee, body=note, is_private=1))
+            db.commit()
+    ensure_task_instances(datetime.now(timezone.utc).replace(tzinfo=None))
+    return {"ok": True, "id": rid}
 
 
 @api.patch("/tasks/templates/{template_id}")

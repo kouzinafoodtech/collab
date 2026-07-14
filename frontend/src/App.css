@@ -3353,3 +3353,53 @@ button.link {
     box-shadow: 0 8px 24px rgba(79, 70, 229, 0.4);
   }
 }
+
+/* ---- Compose task (clean) ---- */
+.compose-modal {
+  padding: 18px 20px 20px;
+}
+
+.compose-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.compose-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.compose-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.compose-lbl {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.compose-lbl em {
+  text-transform: none;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.compose-hint {
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+@media (max-width: 480px) {
+  .compose-grid {
+    grid-template-columns: 1fr;
+  }
+}
