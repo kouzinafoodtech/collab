@@ -2214,13 +2214,18 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
     load();
   }
 
-  // Reply in-thread: goes to this person, keeping the original's privacy.
+  // Reply in-thread: goes to the message's OTHER party (its sender when they
+  // wrote it — vital on your own page, where person.email is yourself).
   async function sendReply(m) {
     if (!replyText.trim()) return;
+    const to =
+      (m.sender || "").toLowerCase() === (me.email || "").toLowerCase()
+        ? m.recipient
+        : m.sender;
     const res = await authFetch("/messages/send", {
       method: "POST",
       body: JSON.stringify({
-        recipient: person.email,
+        recipient: to,
         body: replyText.trim(),
         private: !!m.is_private,
       }),
@@ -2229,6 +2234,9 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
       setReplyText("");
       setReplyId(null);
       load();
+    } else {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      setError(errText(d, "Reply failed"));
     }
   }
 
@@ -2320,20 +2328,22 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
         )}
       </div>
 
-      <form className="card composer-card" onSubmit={send}>
-        <input
-          className="grow"
-          autoFocus
-          placeholder={`Message ${person.name}…`}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-        />
-        <label className="priv-toggle" title="Send privately">
-          <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} />
-          🔒
-        </label>
-        <button type="submit">Send</button>
-      </form>
+      {(person.email || "").toLowerCase() !== (me.email || "").toLowerCase() && (
+        <form className="card composer-card" onSubmit={send}>
+          <input
+            className="grow"
+            autoFocus
+            placeholder={`Message ${person.name}…`}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+          />
+          <label className="priv-toggle" title="Send privately">
+            <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} />
+            🔒
+          </label>
+          <button type="submit">Send</button>
+        </form>
+      )}
       {error && <p className="error">{error}</p>}
 
       {oweThem.length > 0 && (
