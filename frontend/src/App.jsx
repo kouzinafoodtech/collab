@@ -105,10 +105,12 @@ export default function App() {
   });
 
   function authFetch(path, opts = {}) {
+    // FormData bodies must set their own multipart boundary — no JSON header.
+    const isForm = opts.body instanceof FormData;
     return fetch(`${API}${path}`, {
       ...opts,
       headers: {
-        "Content-Type": "application/json",
+        ...(isForm ? {} : { "Content-Type": "application/json" }),
         Authorization: `Bearer ${token}`,
         ...(opts.headers || {}),
       },
@@ -126,9 +128,12 @@ export default function App() {
 
   function onLoggedIn(data) {
     localStorage.setItem("token", data.token);
-    localStorage.setItem("me", JSON.stringify({ email: data.email, name: data.name }));
+    localStorage.setItem(
+      "me",
+      JSON.stringify({ email: data.email, name: data.name, is_super: !!data.is_super })
+    );
     setToken(data.token);
-    setMe({ email: data.email, name: data.name });
+    setMe({ email: data.email, name: data.name, is_super: !!data.is_super });
   }
 
   function logout() {
@@ -208,10 +213,11 @@ const PORTALS = [
 ];
 
 function Shell({ me, authFetch, logout }) {
-  const isSuper = (me.email || "").toLowerCase() === SUPERADMIN;
+  const isSuper = me.is_super || (me.email || "").toLowerCase() === SUPERADMIN;
   const [view, setView] = useState("live"); // live | messages | dash
   const [person, setPerson] = useState(null); // {actor, email, count}
   const [msgFocus, setMsgFocus] = useState(null); // {email, name} open a thread
+  const [showPw, setShowPw] = useState(false); // change-my-password modal
   const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
@@ -343,6 +349,14 @@ function Shell({ me, authFetch, logout }) {
               Dashboard
             </button>
           )}
+          {isSuper && (
+            <button
+              className={`tab ${view === "users" ? "active" : ""}`}
+              onClick={() => setView("users")}
+            >
+              Users
+            </button>
+          )}
         </nav>
         <nav className="portal-links">
           {PORTALS.map((p) => (
@@ -353,6 +367,9 @@ function Shell({ me, authFetch, logout }) {
         </nav>
         <div className="topbar-me">
           <span className="me-name">{me.name}</span>
+          <button className="link" onClick={() => setShowPw(true)} title="Change my password">
+            🔑
+          </button>
           <button className="link" onClick={logout}>
             sign out
           </button>
@@ -373,7 +390,7 @@ function Shell({ me, authFetch, logout }) {
             ["programs", "📌 Programs"],
             ["feedback", "🎭 Feedback"],
             ["messages", "💬 Messages"],
-            ...(isSuper ? [["dash", "📊 Dashboard"]] : []),
+            ...(isSuper ? [["dash", "📊 Dashboard"], ["users", "👥 Users"]] : []),
           ].map(([v, label]) => (
             <button
               key={v}
@@ -400,6 +417,15 @@ function Shell({ me, authFetch, logout }) {
             </a>
           ))}
           <div className="mm-divider" />
+          <button
+            className="mm-item"
+            onClick={() => {
+              setShowPw(true);
+              setMenuOpen(false);
+            }}
+          >
+            🔑 Change password
+          </button>
           <button className="mm-item" onClick={logout}>
             Sign out ({me.name})
           </button>
@@ -483,6 +509,8 @@ function Shell({ me, authFetch, logout }) {
           />
         ))}
       {view === "dash" && <Dashboard authFetch={authFetch} />}
+      {view === "users" && isSuper && <UsersAdmin authFetch={authFetch} me={me} />}
+      {showPw && <ChangePassword authFetch={authFetch} onClose={() => setShowPw(false)} />}
     </div>
   );
 }
@@ -2391,6 +2419,524 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
   );
 }
 
+// ---- Users (superadmin): CRUD, import, org structure ------------------------------
+
+// FastAPI validation errors (422) put an array in `detail` — flatten to text.
+function errText(d, fallback) {
+  const det = d && d.detail;
+  if (typeof det === "string") return det;
+  if (Array.isArray(det)) {
+    return det
+      .map((e) => `${(e.loc || []).slice(1).join(".")}: ${e.msg}`)
+      .join(" · ") || fallback;
+  }
+  return fallback;
+}
+
+function ChangePassword({ authFetch, onClose }) {
+  const [current, setCurrent] = useState("");
+  const [nw, setNw] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [status, setStatus] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (nw.length < 6) return setStatus("New password must be at least 6 characters");
+    if (nw !== confirm) return setStatus("Passwords don't match");
+    setStatus("saving…");
+    const res = await authFetch("/me/password", {
+      method: "POST",
+      body: JSON.stringify({ current, new: nw }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setStatus("Password changed ✓");
+      setTimeout(onClose, 900);
+    } else {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      setStatus(errText(d, "Failed to change password"));
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal pw-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <strong>🔑 Change my password</strong>
+          <button className="link" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={submit} className="pw-form">
+          <input
+            type="password" autoFocus placeholder="Current password"
+            value={current} onChange={(e) => setCurrent(e.target.value)}
+          />
+          <input
+            type="password" placeholder="New password (min 6 chars)"
+            value={nw} onChange={(e) => setNw(e.target.value)}
+          />
+          <input
+            type="password" placeholder="Repeat new password"
+            value={confirm} onChange={(e) => setConfirm(e.target.value)}
+          />
+          <button type="submit">Change password</button>
+          {status && <div className="muted pw-status">{status}</div>}
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function UsersAdmin({ authFetch, me }) {
+  const [users, setUsers] = useState([]);
+  const [defaultPw, setDefaultPw] = useState("Welcome@123");
+  const [structure, setStructure] = useState({ rows: [], functions: [], departments: [] });
+  const [q, setQ] = useState("");
+  const [deptFilter, setDeptFilter] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState(null); // email being edited
+  const [status, setStatus] = useState("");
+  const [importPlan, setImportPlan] = useState(null);
+  const [importFile, setImportFile] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [showOrg, setShowOrg] = useState(false);
+
+  const load = useCallback(() => {
+    authFetch("/org/users")
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        setUsers(d.users || []);
+        if (d.default_password) setDefaultPw(d.default_password);
+      })
+      .catch(() => setStatus("Couldn't load users"));
+    authFetch("/org/structure")
+      .then((r) => r.json())
+      .then(setStructure)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(load, [load]);
+
+  async function patchUser(email, body) {
+    setStatus("saving…");
+    const res = await authFetch(`/org/users?email=${encodeURIComponent(email)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setStatus("");
+      load();
+      return true;
+    }
+    const d = res ? await res.json().catch(() => ({})) : {};
+    setStatus(errText(d, "Save failed"));
+    return false;
+  }
+
+  async function resetPassword(email) {
+    if (!window.confirm(`Reset ${email} to the default password (${defaultPw})?`)) return;
+    const res = await authFetch("/org/users/password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }).catch(() => null);
+    const d = res ? await res.json().catch(() => ({})) : {};
+    setStatus(res && res.ok ? `Password for ${email} reset to ${defaultPw} ✓` : errText(d, "Reset failed"));
+  }
+
+  async function runImport(apply) {
+    if (!importFile) return;
+    setImporting(true);
+    setStatus("");
+    const fd = new FormData();
+    fd.append("file", importFile);
+    try {
+      const res = await authFetch(`/org/import?apply=${apply ? "true" : "false"}`, {
+        method: "POST",
+        body: fd,
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatus(errText(d, "Import failed"));
+      } else {
+        setImportPlan(d);
+        if (d.applied) {
+          const fails = (d.failed || []).length;
+          setStatus(
+            `Imported: ${d.created} created, ${d.profiles_updated} profiles updated` +
+              (fails ? ` — ⚠ ${fails} failed: ${d.failed[0].error}` : " ✓")
+          );
+          setImportFile(null);
+          load();
+        }
+      }
+    } catch {
+      setStatus("Import failed");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const ql = q.trim().toLowerCase();
+  const visible = users.filter((u) => {
+    if (deptFilter && u.department !== deptFilter) return false;
+    if (!ql) return true;
+    return [u.name, u.email, u.function, u.department, u.sub_department, u.owner]
+      .some((v) => (v || "").toLowerCase().includes(ql));
+  });
+
+  return (
+    <main className="hub users-hub">
+      <div className="hub-head">
+        <button onClick={() => setShowNew(!showNew)}>
+          {showNew ? "Cancel" : "+ New user"}
+        </button>
+        <label className="import-btn chip-toggle">
+          📄 {importFile ? importFile.name : "Import ownership.xlsx"}
+          <input
+            type="file"
+            accept=".xlsx"
+            hidden
+            onClick={(e) => {
+              e.target.value = "";
+            }}
+            onChange={(e) => {
+              setImportPlan(null);
+              setImportFile(e.target.files?.[0] || null);
+            }}
+          />
+        </label>
+        {importFile && !importPlan?.applied && (
+          <button onClick={() => runImport(false)} disabled={importing}>
+            {importing ? "Reading…" : "Preview import"}
+          </button>
+        )}
+        <button className="chip-toggle" onClick={() => setShowOrg(!showOrg)}>
+          🏛 Departments ({structure.rows.length})
+        </button>
+      </div>
+
+      <div className="muted users-note">
+        Accounts live in PartnerKart (same login). New users get the default
+        password <code>{defaultPw}</code> and <strong>no KPK access</strong> —
+        permissions stay managed in KPK. They can sign in to Kouzina Live right away.
+      </div>
+      {status && <div className="users-status">{status}</div>}
+
+      {importPlan && !importPlan.applied && (
+        <div className="card import-preview">
+          <strong>Import preview</strong>
+          <div className="import-stats">
+            <span>{importPlan.people_in_file} people in file</span>
+            <span>{importPlan.matched_existing} already admins (profile update)</span>
+            <span className="import-new">{importPlan.will_create.length} new users to create</span>
+            <span>{importPlan.departments_in_file} org rows</span>
+            {(importPlan.skipped_invalid || []).length > 0 && (
+              <span title={importPlan.skipped_invalid.join(", ")}>
+                ⚠ {importPlan.skipped_invalid.length} skipped (bad email)
+              </span>
+            )}
+          </div>
+          {importPlan.will_create.length > 0 && (
+            <div className="import-list">
+              {importPlan.will_create.map((p) => (
+                <span key={p.email} className="chip chip-other" title={p.department || ""}>
+                  {p.name || p.email}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="import-actions">
+            <button onClick={() => runImport(true)} disabled={importing}>
+              {importing ? "Applying…" : `Apply — create ${importPlan.will_create.length} users`}
+            </button>
+            <button className="link" onClick={() => setImportPlan(null)}>cancel</button>
+          </div>
+        </div>
+      )}
+
+      {showOrg && (
+        <OrgStructure
+          structure={structure}
+          authFetch={authFetch}
+          onChanged={load}
+        />
+      )}
+
+      {showNew && (
+        <NewUserForm
+          structure={structure}
+          defaultPw={defaultPw}
+          authFetch={authFetch}
+          onDone={() => {
+            setShowNew(false);
+            load();
+          }}
+        />
+      )}
+
+      <div className="msg-filter">
+        <input
+          className="grow"
+          placeholder="Search people, departments…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
+          <option value="">All departments</option>
+          {structure.departments.map((d) => (
+            <option key={d} value={d}>{d}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="users-list">
+        {visible.map((u) =>
+          editing === u.email ? (
+            <EditUserForm
+              key={u.email}
+              user={u}
+              structure={structure}
+              onSave={async (body) => {
+                if (await patchUser(u.email, body)) setEditing(null);
+              }}
+              onCancel={() => setEditing(null)}
+            />
+          ) : (
+            <div key={u.email} className={`card user-row ${u.active ? "" : "user-inactive"}`}>
+              <span className="avatar sm" style={{ background: actorColor(u.name || u.email) }}>
+                {initials(u.name || u.email)}
+              </span>
+              <div className="user-id">
+                <strong>{u.name || u.email}</strong>
+                <span className="muted user-email">{u.email}</span>
+              </div>
+              <div className="user-tags">
+                {u.department && <span className="chip chip-order">{u.department}</span>}
+                {u.function && <span className="chip chip-people">{u.function}</span>}
+                {u.is_super_admin && <span className="chip chip-money">super</span>}
+                <span className={`chip ${u.kpk_access ? "chip-stock" : "chip-other"}`}>
+                  {u.kpk_access ? "KPK" : "KLU only"}
+                </span>
+                {!u.active && <span className="chip chip-other">inactive</span>}
+              </div>
+              <span className="user-actions">
+                <button className="link" onClick={() => setEditing(u.email)}>edit</button>
+                <button className="link" onClick={() => resetPassword(u.email)}>reset pw</button>
+                {u.email.toLowerCase() !== (me.email || "").toLowerCase() && (
+                  <button
+                    className="link"
+                    onClick={() => patchUser(u.email, { active: !u.active })}
+                  >
+                    {u.active ? "deactivate" : "reactivate"}
+                  </button>
+                )}
+              </span>
+            </div>
+          )
+        )}
+        {visible.length === 0 && <div className="empty big">No users match.</div>}
+      </div>
+    </main>
+  );
+}
+
+function NewUserForm({ structure, defaultPw, authFetch, onDone }) {
+  const [f, setF] = useState({ name: "", email: "", function: "", department: "", sub_department: "" });
+  const [err, setErr] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr("");
+    const res = await authFetch("/org/users", {
+      method: "POST",
+      body: JSON.stringify({
+        name: f.name.trim(),
+        email: f.email.trim(),
+        function: f.function || null,
+        department: f.department || null,
+        sub_department: f.sub_department || null,
+      }),
+    }).catch(() => null);
+    if (res && res.ok) onDone();
+    else {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      setErr(errText(d, "Failed to create user"));
+    }
+  }
+
+  return (
+    <form className="card prog-form" onSubmit={submit}>
+      <div className="prog-form-row">
+        <input
+          autoFocus placeholder="Full name…" value={f.name}
+          onChange={(e) => setF({ ...f, name: e.target.value })}
+        />
+        <input
+          placeholder="email@kftpl.com" value={f.email}
+          onChange={(e) => setF({ ...f, email: e.target.value })}
+        />
+      </div>
+      <div className="prog-form-row">
+        <select value={f.function} onChange={(e) => setF({ ...f, function: e.target.value })}>
+          <option value="">Function…</option>
+          {structure.functions.map((x) => <option key={x} value={x}>{x}</option>)}
+        </select>
+        <select value={f.department} onChange={(e) => setF({ ...f, department: e.target.value })}>
+          <option value="">Department…</option>
+          {structure.departments.map((x) => <option key={x} value={x}>{x}</option>)}
+        </select>
+        <input
+          placeholder="Sub-department (optional)" value={f.sub_department}
+          onChange={(e) => setF({ ...f, sub_department: e.target.value })}
+        />
+        <button type="submit">Create</button>
+      </div>
+      <div className="muted">
+        Signs in with <code>{defaultPw}</code> · no KPK modules · active immediately.
+      </div>
+      {err && <p className="error">{err}</p>}
+    </form>
+  );
+}
+
+function EditUserForm({ user, structure, onSave, onCancel }) {
+  const [f, setF] = useState({
+    name: user.name || "",
+    function: user.function || "",
+    department: user.department || "",
+    sub_department: user.sub_department || "",
+    owner: user.owner || "",
+  });
+  return (
+    <form
+      className="card prog-form prog-edit"
+      onSubmit={(e) => {
+        e.preventDefault();
+        // Empty strings clear a field (backend maps "" → NULL); name stays
+        // untouched when blank so we never wipe the KPK display name.
+        onSave({
+          name: f.name.trim() || undefined,
+          function: f.function,
+          department: f.department,
+          sub_department: f.sub_department,
+          owner: f.owner,
+        });
+      }}
+    >
+      <div className="prog-form-row">
+        <input value={f.name} placeholder="Name" onChange={(e) => setF({ ...f, name: e.target.value })} />
+        <span className="muted">{user.email}</span>
+      </div>
+      <div className="prog-form-row">
+        <select value={f.function} onChange={(e) => setF({ ...f, function: e.target.value })}>
+          <option value="">Function…</option>
+          {structure.functions.map((x) => <option key={x} value={x}>{x}</option>)}
+          {f.function && !structure.functions.includes(f.function) && (
+            <option value={f.function}>{f.function}</option>
+          )}
+        </select>
+        <select value={f.department} onChange={(e) => setF({ ...f, department: e.target.value })}>
+          <option value="">Department…</option>
+          {structure.departments.map((x) => <option key={x} value={x}>{x}</option>)}
+          {f.department && !structure.departments.includes(f.department) && (
+            <option value={f.department}>{f.department}</option>
+          )}
+        </select>
+        <input
+          value={f.sub_department} placeholder="Sub-department"
+          onChange={(e) => setF({ ...f, sub_department: e.target.value })}
+        />
+        <input
+          value={f.owner} placeholder="Dept owner"
+          onChange={(e) => setF({ ...f, owner: e.target.value })}
+        />
+        <button type="submit">Save</button>
+        <button type="button" className="link" onClick={onCancel}>cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function OrgStructure({ structure, authFetch, onChanged }) {
+  const [f, setF] = useState({ function: "", department: "", leader: "", owner: "" });
+  const [editId, setEditId] = useState(null);
+  const [edit, setEdit] = useState({});
+
+  async function add(e) {
+    e.preventDefault();
+    if (!f.function.trim() || !f.department.trim()) return;
+    const res = await authFetch("/org/structure", {
+      method: "POST",
+      body: JSON.stringify(f),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setF({ function: "", department: "", leader: "", owner: "" });
+      onChanged();
+    }
+  }
+
+  async function save(id) {
+    const res = await authFetch(`/org/structure/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(edit),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setEditId(null);
+      onChanged();
+    }
+  }
+
+  async function remove(id) {
+    if (!window.confirm("Remove this department row?")) return;
+    await authFetch(`/org/structure/${id}`, { method: "DELETE" }).catch(() => {});
+    onChanged();
+  }
+
+  return (
+    <div className="card org-card">
+      <strong>🏛 Functions & Departments</strong>
+      <form className="prog-form-row org-add" onSubmit={add}>
+        <input placeholder="Function" value={f.function}
+          onChange={(e) => setF({ ...f, function: e.target.value })} />
+        <input placeholder="Department" value={f.department}
+          onChange={(e) => setF({ ...f, department: e.target.value })} />
+        <input placeholder="Leader" value={f.leader}
+          onChange={(e) => setF({ ...f, leader: e.target.value })} />
+        <input placeholder="Owner" value={f.owner}
+          onChange={(e) => setF({ ...f, owner: e.target.value })} />
+        <button type="submit">Add</button>
+      </form>
+      <div className="org-rows">
+        {structure.rows.map((r) =>
+          editId === r.id ? (
+            <div key={r.id} className="org-row">
+              <input value={edit.function} onChange={(e) => setEdit({ ...edit, function: e.target.value })} />
+              <input value={edit.department} onChange={(e) => setEdit({ ...edit, department: e.target.value })} />
+              <input value={edit.leader || ""} placeholder="Leader" onChange={(e) => setEdit({ ...edit, leader: e.target.value })} />
+              <input value={edit.owner || ""} placeholder="Owner" onChange={(e) => setEdit({ ...edit, owner: e.target.value })} />
+              <button onClick={() => save(r.id)}>Save</button>
+              <button className="link" onClick={() => setEditId(null)}>cancel</button>
+            </div>
+          ) : (
+            <div key={r.id} className="org-row">
+              <span className="org-fn">{r.function}</span>
+              <span className="org-dept">{r.department}</span>
+              <span className="muted">lead: {r.leader || "—"}</span>
+              <span className="muted">owner: {r.owner || "—"}</span>
+              <span className="org-actions">
+                <button className="link" onClick={() => { setEditId(r.id); setEdit(r); }}>edit</button>
+                <button className="link" onClick={() => remove(r.id)}>remove</button>
+              </span>
+            </div>
+          )
+        )}
+        {structure.rows.length === 0 && (
+          <div className="empty">No departments yet — add above or import the sheet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Superadmin dashboard --------------------------------------------------------
 
 function BarList({ items }) {
@@ -2590,22 +3136,42 @@ function Feed({ authFetch, actor, onActor }) {
   const [expanded, setExpanded] = useState(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [portal, setPortal] = useState(null); // null = all sources
+  const [dept, setDept] = useState(""); // department filter
+  const [depts, setDepts] = useState([]);
 
   const actorQS = actor ? `&actor=${encodeURIComponent(actor)}` : "";
   const portalQS = portal ? `&portal=${portal}` : "";
+  const deptQS = dept ? `&department=${encodeURIComponent(dept)}` : "";
 
-  function changePortal(p) {
-    if (p === portal) return;
-    setPortal(p);
+  useEffect(() => {
+    authFetch("/org/structure")
+      .then((r) => r.json())
+      .then((d) => setDepts(d.departments || []))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function resetPaging() {
     setOlder([]);
     setCursor(null);
     setHasMore(false);
   }
 
+  function changePortal(p) {
+    if (p === portal) return;
+    setPortal(p);
+    resetPaging();
+  }
+
+  function changeDept(d) {
+    setDept(d);
+    resetPaging();
+  }
+
   const load = useCallback(
     (manual = false) => {
       if (manual) setRefreshing(true);
-      authFetch(`/feed?limit=${PAGE_FIRST}${actorQS}${portalQS}`)
+      authFetch(`/feed?limit=${PAGE_FIRST}${actorQS}${portalQS}${deptQS}`)
         .then((r) => r.json())
         .then((data) => {
           setTop(data.events);
@@ -2627,7 +3193,7 @@ function Feed({ authFetch, actor, onActor }) {
         .finally(() => setRefreshing(false));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [actorQS, portalQS]
+    [actorQS, portalQS, deptQS]
   );
 
   async function loadOlder() {
@@ -2637,7 +3203,7 @@ function Feed({ authFetch, actor, onActor }) {
       const res = await authFetch(
         `/feed?limit=${PAGE_MORE}&cursor_ts=${encodeURIComponent(
           cursor.ts
-        )}&cursor_id=${cursor.id}${actorQS}${portalQS}`
+        )}&cursor_id=${cursor.id}${actorQS}${portalQS}${deptQS}`
       );
       const data = await res.json();
       setOlder((cur) => [...cur, ...data.events]);
@@ -2704,6 +3270,19 @@ function Feed({ authFetch, actor, onActor }) {
             {label}
           </button>
         ))}
+        {depts.length > 0 && (
+          <select
+            className={`feed-dept ${dept ? "on" : ""}`}
+            value={dept}
+            onChange={(e) => changeDept(e.target.value)}
+            title="Filter by department"
+          >
+            <option value="">🏛 All departments</option>
+            {depts.map((d) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+        )}
       </div>
       <div className="feed-bar">
         <span className="feed-updated">

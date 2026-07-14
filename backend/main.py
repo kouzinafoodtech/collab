@@ -23,6 +23,7 @@ Storage:
     queries, so no separate connection is needed.
 """
 
+import io
 import json
 import os
 import smtplib
@@ -34,7 +35,9 @@ from typing import Optional
 
 import bcrypt
 import jwt
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import (
+    BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -208,6 +211,34 @@ class IngestStateRow(Base):
     source = Column(String(64), primary_key=True)
     last_id = Column(Integer, nullable=False, default=0)
     last_run = Column(DateTime(timezone=True), nullable=True)
+
+
+class UserProfileRow(Base):
+    """KLU-side org profile for a pkdb admin. The account itself (email,
+    password, active) lives in pkdb.admins — permissions stay KPK-managed."""
+    __tablename__ = "user_profiles"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    function = Column(String(255), nullable=True)
+    department = Column(String(255), nullable=True)
+    sub_department = Column(String(255), nullable=True)
+    owner = Column(String(255), nullable=True)       # department owner (person)
+    notes = Column(Text, nullable=True)
+    created_by = Column(String(255), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class OrgDeptRow(Base):
+    """Company org structure (Function → Department → Leader → Owner),
+    editable by superadmins; seeds the dropdowns and the feed filter."""
+    __tablename__ = "org_departments"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    function = Column(String(255), nullable=False)
+    department = Column(String(255), nullable=False)
+    leader = Column(String(255), nullable=True)
+    owner = Column(String(255), nullable=True)
+    active = Column(Integer, nullable=False, default=1)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 Base.metadata.create_all(engine)
@@ -888,6 +919,7 @@ def login(body: LoginIn):
         "token": make_token(admin["email"], admin.get("name")),
         "email": admin["email"],
         "name": admin.get("name") or admin["email"],
+        "is_super": is_superadmin(admin["email"]),
     }
 
 
@@ -901,6 +933,544 @@ def admins(admin: dict = Depends(current_admin)):
     """All active admins (including you — the DM composer hides self client-side,
     but you should be selectable for red-flag reminders / testing)."""
     return list_active_admins()
+
+
+# ---- User management (superadmin) ------------------------------------------------
+# Accounts live in pkdb.admins (same auth KPK uses); KLU adds the org profile
+# (function/department) in its own DB and never touches KPK permissions.
+
+DEFAULT_PASSWORD = "Welcome@123"
+
+
+def _hash_password(pw: str) -> str:
+    """bcrypt with the $2y$ prefix Laravel/PK expects (PHP password_verify
+    treats $2y$/$2b$ identically; our own login normalises back)."""
+    h = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+    return "$2y$" + h[4:] if h.startswith("$2b$") else h
+
+
+def is_superadmin(email: str) -> bool:
+    if (email or "").lower() == SUPERADMIN_EMAIL.lower():
+        if IS_MYSQL:  # a deactivated bootstrap account loses its powers too
+            try:
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text("SELECT active FROM pkdb.admins WHERE LOWER(email) = :e LIMIT 1"),
+                        {"e": (email or "").lower()},
+                    ).first()
+                if row is not None and not row[0]:
+                    return False
+            except Exception:
+                pass
+        return True
+    if IS_MYSQL:
+        try:
+            with engine.connect() as conn:
+                return (
+                    conn.execute(
+                        text("SELECT 1 FROM pkdb.admins WHERE email = :e "
+                             "AND active = 1 AND is_super_admin = 1 LIMIT 1"),
+                        {"e": email},
+                    ).first()
+                    is not None
+                )
+        except Exception:
+            return False
+    return False
+
+
+def require_superadmin(admin: dict = Depends(current_admin)) -> dict:
+    if not is_superadmin(admin["email"]):
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    return admin
+
+
+def _grant_hint(exc: Exception) -> str:
+    msg = str(exc)
+    if "denied" in msg.lower() or "1142" in msg:
+        return ("The app's DB user lacks write access on pkdb.admins — ask the DBA for: "
+                "GRANT SELECT, INSERT, UPDATE ON pkdb.admins TO <app user>;")
+    return "Database error while writing pkdb.admins"
+
+
+def _norm_email(e: str) -> str:
+    return (e or "").strip().lower()
+
+
+def _guard_target(email: str, me: str):
+    """Mutations may not touch system accounts or OTHER superadmins — those are
+    KPK's to manage. Raises 404/403; returns the admin row (or None on sqlite)."""
+    if _excluded(email):
+        raise HTTPException(status_code=403, detail="System accounts can't be managed here")
+    if not IS_MYSQL:
+        return None
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT email, is_super_admin FROM pkdb.admins WHERE LOWER(email) = :e LIMIT 1"),
+            {"e": email},
+        ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No admin with this email")
+    if row["is_super_admin"] and email != _norm_email(me):
+        raise HTTPException(
+            status_code=403, detail="Superadmin accounts are managed in KPK, not here"
+        )
+    return dict(row)
+
+
+class UserIn(BaseModel):
+    name: str = Field(..., min_length=2, max_length=255)
+    email: str = Field(..., min_length=5, max_length=255)
+    function: Optional[str] = Field(default=None, max_length=255)
+    department: Optional[str] = Field(default=None, max_length=255)
+    sub_department: Optional[str] = Field(default=None, max_length=255)
+    owner: Optional[str] = Field(default=None, max_length=255)
+    notes: Optional[str] = Field(default=None, max_length=1000)
+    password: Optional[str] = Field(default=None, min_length=6, max_length=72)
+
+
+class UserPatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    active: Optional[bool] = None
+    function: Optional[str] = Field(default=None, max_length=255)
+    department: Optional[str] = Field(default=None, max_length=255)
+    sub_department: Optional[str] = Field(default=None, max_length=255)
+    owner: Optional[str] = Field(default=None, max_length=255)
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class PasswordResetIn(BaseModel):
+    email: str
+    password: Optional[str] = Field(default=None, min_length=6, max_length=72)
+
+
+class MyPasswordIn(BaseModel):
+    current: str = Field(..., min_length=1, max_length=128)
+    new: str = Field(..., min_length=6, max_length=72)
+
+
+def _profiles_by_email(db) -> dict:
+    return {p.email.lower(): p for p in db.query(UserProfileRow).all()}
+
+
+def _apply_profile(db, email: str, data: dict, who: str):
+    """Upsert the KLU org profile for an email (only the provided keys)."""
+    row = db.query(UserProfileRow).filter(func.lower(UserProfileRow.email) == email.lower()).first()
+    if not row:
+        row = UserProfileRow(email=email)
+        db.add(row)
+    for k in ("function", "department", "sub_department", "owner", "notes"):
+        if k in data and data[k] is not None:
+            setattr(row, k, str(data[k]).strip() or None)
+    row.created_by = row.created_by or who
+    row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.flush()  # visible to later lookups in this same session
+
+
+@api.get("/org/users")
+def org_users(admin: dict = Depends(require_superadmin)):
+    """Every pkdb admin + their KLU org profile, for the Users tab."""
+    accounts = []
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT id, name, email, active, is_super_admin, "
+                     "(allowed_modules IS NOT NULL AND allowed_modules <> '' "
+                     " AND allowed_modules <> '[]') AS has_kpk "
+                     "FROM pkdb.admins ORDER BY active DESC, name ASC")
+            ).mappings().all()
+            accounts = [dict(r) for r in rows if not _excluded(r["email"])]
+    else:  # dev fallback
+        accounts = [
+            {"id": i + 1, "name": a["name"], "email": a["email"], "active": 1,
+             "is_super_admin": 0, "has_kpk": 1}
+            for i, a in enumerate(list_active_admins())
+        ]
+    with SessionLocal() as db:
+        profs = _profiles_by_email(db)
+    out = []
+    for a in accounts:
+        p = profs.get(_norm_email(a["email"]))
+        out.append(
+            {
+                "name": a["name"],
+                "email": a["email"],
+                "active": bool(a["active"]),
+                "is_super_admin": bool(a["is_super_admin"]),
+                "kpk_access": bool(a["has_kpk"]),
+                "function": p.function if p else None,
+                "department": p.department if p else None,
+                "sub_department": p.sub_department if p else None,
+                "owner": p.owner if p else None,
+                "notes": p.notes if p else None,
+            }
+        )
+    return {"users": out, "default_password": DEFAULT_PASSWORD}
+
+
+@api.post("/org/users", status_code=201)
+def org_create_user(payload: UserIn, admin: dict = Depends(require_superadmin)):
+    email = _norm_email(payload.email)
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+    if _excluded(email):
+        raise HTTPException(status_code=403, detail="System accounts can't be managed here")
+    name = payload.name.strip()
+    if not IS_MYSQL:
+        raise HTTPException(status_code=400, detail="User creation needs the production DB")
+    with engine.connect() as conn:
+        exists = conn.execute(
+            text("SELECT 1 FROM pkdb.admins WHERE LOWER(email) = :e LIMIT 1"), {"e": email}
+        ).first()
+        if exists:
+            raise HTTPException(status_code=409, detail="An admin with this email already exists")
+        try:
+            conn.execute(
+                text("INSERT INTO pkdb.admins (name, email, password_hash, is_super_admin, "
+                     "active, allowed_modules, created_at) "
+                     "VALUES (:n, :e, :p, 0, 1, '[]', NOW())"),
+                {"n": name, "e": email, "p": _hash_password(payload.password or DEFAULT_PASSWORD)},
+            )
+            conn.commit()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=_grant_hint(exc))
+    with SessionLocal() as db:
+        _apply_profile(db, email, payload.model_dump(), admin["email"])
+        db.commit()
+    emit_live_event(
+        admin.get("name") or admin["email"], "user_created",
+        f"created user · {name}", {"module": "Users", "department": payload.department},
+    )
+    return {"ok": True, "email": email, "password_set": bool(payload.password)}
+
+
+@api.patch("/org/users")
+def org_update_user(
+    email: str, payload: UserPatch, admin: dict = Depends(require_superadmin)
+):
+    email = _norm_email(email)
+    _guard_target(email, admin["email"])
+    if IS_MYSQL and (payload.name is not None or payload.active is not None):
+        sets, params = [], {"e": email}
+        if payload.name is not None:
+            sets.append("name = :n")
+            params["n"] = payload.name.strip()
+        if payload.active is not None:
+            if not payload.active and email == _norm_email(admin["email"]):
+                raise HTTPException(status_code=400, detail="You can't deactivate yourself")
+            sets.append("active = :a")
+            params["a"] = 1 if payload.active else 0
+        try:
+            with engine.connect() as conn:
+                res = conn.execute(
+                    text(f"UPDATE pkdb.admins SET {', '.join(sets)} WHERE LOWER(email) = :e"),
+                    params,
+                )
+                conn.commit()
+                if res.rowcount == 0:
+                    raise HTTPException(status_code=404, detail="No admin with this email")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=_grant_hint(exc))
+    with SessionLocal() as db:
+        _apply_profile(db, email, payload.model_dump(exclude_none=True), admin["email"])
+        db.commit()
+    if payload.active is not None:
+        emit_live_event(
+            admin.get("name") or admin["email"],
+            "user_deactivated" if not payload.active else "user_reactivated",
+            ("deactivated" if not payload.active else "reactivated") + f" user · {email}",
+            {"module": "Users"},
+        )
+    return {"ok": True}
+
+
+@api.post("/org/users/password")
+def org_reset_password(payload: PasswordResetIn, admin: dict = Depends(require_superadmin)):
+    email = _norm_email(payload.email)
+    _guard_target(email, admin["email"])
+    if not IS_MYSQL:
+        raise HTTPException(status_code=400, detail="Password reset needs the production DB")
+    try:
+        with engine.connect() as conn:
+            res = conn.execute(
+                text("UPDATE pkdb.admins SET password_hash = :p WHERE LOWER(email) = :e"),
+                {"p": _hash_password(payload.password or DEFAULT_PASSWORD), "e": email},
+            )
+            conn.commit()
+            if res.rowcount == 0:
+                raise HTTPException(status_code=404, detail="No admin with this email")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=_grant_hint(exc))
+    emit_live_event(
+        admin.get("name") or admin["email"], "user_password_reset",
+        f"reset password · {email}", {"module": "Users"},
+    )
+    return {"ok": True, "default": payload.password is None}
+
+
+@api.post("/me/password")
+def change_my_password(payload: MyPasswordIn, admin: dict = Depends(current_admin)):
+    """Any admin can change their own password after proving the current one."""
+    account = fetch_admin_by_email(admin["email"])
+    if not account or not _verify_password(payload.current, account["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if not IS_MYSQL:
+        raise HTTPException(status_code=400, detail="Password change needs the production DB")
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("UPDATE pkdb.admins SET password_hash = :p WHERE LOWER(email) = :e"),
+                {"p": _hash_password(payload.new), "e": _norm_email(admin["email"])},
+            )
+            conn.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=_grant_hint(exc))
+    return {"ok": True}
+
+
+# ---- Org structure (functions & departments) -------------------------------------
+
+class OrgDeptIn(BaseModel):
+    function: str = Field(..., min_length=2, max_length=255)
+    department: str = Field(..., min_length=2, max_length=255)
+    leader: Optional[str] = Field(default=None, max_length=255)
+    owner: Optional[str] = Field(default=None, max_length=255)
+
+
+@api.get("/org/structure")
+def org_structure(admin: dict = Depends(current_admin)):
+    """Org chart rows + distinct department list (feeds dropdowns + feed filter).
+    Readable by all admins; editing is superadmin-only."""
+    with SessionLocal() as db:
+        rows = (
+            db.query(OrgDeptRow)
+            .filter(OrgDeptRow.active == 1)
+            .order_by(OrgDeptRow.function, OrgDeptRow.department)
+            .all()
+        )
+        prof_depts = {
+            d for (d,) in db.query(UserProfileRow.department)
+            .filter(UserProfileRow.department.isnot(None)).distinct()
+        }
+    departments = sorted(prof_depts | {r.department for r in rows})
+    return {
+        "rows": [
+            {"id": r.id, "function": r.function, "department": r.department,
+             "leader": r.leader, "owner": r.owner}
+            for r in rows
+        ],
+        "functions": sorted({r.function for r in rows}),
+        "departments": departments,
+        "is_super": is_superadmin(admin["email"]),
+    }
+
+
+@api.post("/org/structure", status_code=201)
+def org_structure_add(payload: OrgDeptIn, admin: dict = Depends(require_superadmin)):
+    with SessionLocal() as db:
+        row = OrgDeptRow(
+            function=payload.function.strip(), department=payload.department.strip(),
+            leader=(payload.leader or "").strip() or None,
+            owner=(payload.owner or "").strip() or None,
+        )
+        db.add(row)
+        db.commit()
+        return {"ok": True, "id": row.id}
+
+
+@api.patch("/org/structure/{row_id}")
+def org_structure_edit(row_id: int, payload: OrgDeptIn, admin: dict = Depends(require_superadmin)):
+    with SessionLocal() as db:
+        row = db.get(OrgDeptRow, row_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
+        row.function = payload.function.strip()
+        row.department = payload.department.strip()
+        row.leader = (payload.leader or "").strip() or None
+        row.owner = (payload.owner or "").strip() or None
+        db.commit()
+    return {"ok": True}
+
+
+@api.delete("/org/structure/{row_id}")
+def org_structure_remove(row_id: int, admin: dict = Depends(require_superadmin)):
+    with SessionLocal() as db:
+        row = db.get(OrgDeptRow, row_id)
+        if row:
+            row.active = 0
+            db.commit()
+    return {"ok": True}
+
+
+# ---- Excel import (ownership.xlsx) ------------------------------------------------
+
+def _sheet_header_map(header_row) -> dict:
+    """Tolerant header → key mapping ('Sub Department' → sub_department, …)."""
+    keys = {}
+    for idx, cell in enumerate(header_row):
+        label = str(cell or "").strip().lower()
+        if not label:
+            continue
+        if "person" in label or label == "name":
+            keys["name"] = idx
+        elif "email" in label:
+            keys["email"] = idx
+        elif "sub" in label and "depart" in label:
+            keys["sub_department"] = idx
+        elif "function" in label:
+            keys["function"] = idx
+        elif "owner" in label:
+            keys["owner"] = idx
+        elif "leader" in label:
+            keys["leader"] = idx
+        elif "depart" in label:
+            keys["department"] = idx
+        elif "note" in label:
+            keys["notes"] = idx
+    return keys
+
+
+@api.post("/org/import")
+async def org_import(
+    file: UploadFile = File(...),
+    apply: bool = Query(default=False),
+    admin: dict = Depends(require_superadmin),
+):
+    """Import ownership.xlsx: people sheet (Person/Email/Function/Department/…)
+    and an optional departments sheet (Function/Department/Leader/Owner).
+    Dry-run by default — returns the plan; ?apply=true executes it: creates
+    missing pkdb admins (default password, no KPK modules), upserts profiles
+    and the org structure."""
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(await file.read()), data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read that file — is it .xlsx?")
+
+    people, depts, skipped = [], [], []
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        header_idx = next(
+            (i for i, r in enumerate(rows)
+             if r and _sheet_header_map(r).keys() >= {"department"}),
+            None,
+        )
+        if header_idx is None:
+            continue
+        keys = _sheet_header_map(rows[header_idx])
+        get = lambda r, k: (str(r[keys[k]]).strip() if k in keys and keys[k] < len(r) and r[keys[k]] is not None else None)
+        for r in rows[header_idx + 1:]:
+            if not r or not any(v is not None for v in r):
+                continue
+            if "email" in keys and get(r, "email"):
+                email = _norm_email(get(r, "email"))
+                if "@" not in email or "." not in email.split("@")[-1] or _excluded(email):
+                    skipped.append(get(r, "email"))
+                    continue
+                people.append({
+                    "name": get(r, "name"), "email": email,
+                    "function": get(r, "function"), "department": get(r, "department"),
+                    "sub_department": get(r, "sub_department"), "owner": get(r, "owner"),
+                    "notes": get(r, "notes"),
+                })
+            elif "email" not in keys and get(r, "department") and get(r, "function"):
+                depts.append({
+                    "function": get(r, "function"), "department": get(r, "department"),
+                    "leader": get(r, "leader"), "owner": get(r, "owner"),
+                })
+
+    # Last row wins on duplicates — keeps the upserts single-shot per key.
+    people = list({p["email"]: p for p in people}.values())
+    depts = list({(d["function"].lower(), d["department"].lower()): d for d in depts}.values())
+
+    if not people and not depts:
+        raise HTTPException(status_code=400, detail="No recognisable rows found in the file")
+
+    existing = {}
+    if IS_MYSQL:
+        with engine.connect() as conn:
+            existing = {
+                r["email"].lower(): dict(r)
+                for r in conn.execute(
+                    text("SELECT email, name, active FROM pkdb.admins")
+                ).mappings().all()
+            }
+    else:
+        existing = {a["email"].lower(): a for a in list_active_admins()}
+
+    to_create = [p for p in people if p["email"] not in existing]
+    to_match = [p for p in people if p["email"] in existing]
+
+    plan = {
+        "people_in_file": len(people),
+        "matched_existing": len(to_match),
+        "will_create": [
+            {"name": p["name"], "email": p["email"], "department": p["department"]}
+            for p in to_create
+        ],
+        "departments_in_file": len(depts),
+        "skipped_invalid": skipped,
+        "default_password": DEFAULT_PASSWORD,
+        "applied": False,
+    }
+    if not apply:
+        return plan
+
+    created, failed = 0, []
+    if to_create:
+        if not IS_MYSQL:
+            raise HTTPException(status_code=400, detail="User creation needs the production DB")
+        with engine.connect() as conn:
+            for p in to_create:
+                try:
+                    conn.execute(
+                        text("INSERT INTO pkdb.admins (name, email, password_hash, "
+                             "is_super_admin, active, allowed_modules, created_at) "
+                             "VALUES (:n, :e, :p, 0, 1, '[]', NOW())"),
+                        {"n": p["name"] or p["email"].split("@")[0], "e": p["email"],
+                         "p": _hash_password(DEFAULT_PASSWORD)},
+                    )
+                    created += 1
+                except Exception as exc:
+                    failed.append({"email": p["email"], "error": _grant_hint(exc)})
+            conn.commit()
+
+    with SessionLocal() as db:
+        for p in people:
+            if p["email"] not in {f["email"] for f in failed}:
+                _apply_profile(db, p["email"], p, admin["email"])
+        for d in depts:
+            row = (
+                db.query(OrgDeptRow)
+                .filter(
+                    func.lower(OrgDeptRow.function) == d["function"].lower(),
+                    func.lower(OrgDeptRow.department) == d["department"].lower(),
+                )
+                .first()
+            )
+            if not row:
+                row = OrgDeptRow(function=d["function"], department=d["department"])
+                db.add(row)
+                db.flush()
+            row.leader = d["leader"] or row.leader
+            row.owner = d["owner"] or row.owner
+            row.active = 1
+        db.commit()
+
+    emit_live_event(
+        admin.get("name") or admin["email"], "users_imported",
+        f"imported org sheet · {created} new users, {len(to_match)} matched",
+        {"module": "Users"},
+    )
+    plan.update({"applied": True, "created": created, "profiles_updated": len(people) - len(failed),
+                 "failed": failed})
+    return plan
 
 
 @api.get("/leaderboard")
@@ -1449,6 +2019,7 @@ def get_feed(
     cursor_id: Optional[int] = Query(default=None),
     portal: Optional[str] = Query(default=None),
     actor: Optional[str] = Query(default=None),
+    department: Optional[str] = Query(default=None),
     admin: dict = Depends(current_admin),
 ):
     """Latest activity first, GROUPED: consecutive events by the same person
@@ -1465,6 +2036,20 @@ def get_feed(
             q = q.filter(FeedEventRow.portal == portal)
         if actor:
             q = q.filter(FeedEventRow.actor == actor)
+        if department:
+            # Department → member emails (profiles) → display names (pkdb) →
+            # actor filter. Actors in the feed are display names.
+            emails = [
+                e for (e,) in db.query(UserProfileRow.email)
+                .filter(UserProfileRow.department == department)
+            ]
+            names = set(resolve_names(set(emails)).values())
+            # People whose pkdb name is missing still match by email prefix.
+            names |= {e.split("@")[0] for e in emails}
+            if not names:
+                return {"events": [], "has_more": False,
+                        "next_cursor_ts": None, "next_cursor_id": None}
+            q = q.filter(FeedEventRow.actor.in_(sorted(names)))
         if cursor_ts is not None and cursor_id is not None:
             try:
                 ts = datetime.fromisoformat(cursor_ts)

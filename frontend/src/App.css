@@ -2641,3 +2641,208 @@ button.link {
     order: 10;
   }
 }
+
+/* ---- Users admin (superadmin) ---- */
+.users-note {
+  font-size: 0.82rem;
+  padding: 0 2px;
+}
+
+.users-note code {
+  background: #eef2ff;
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-weight: 700;
+  color: var(--brand);
+}
+
+.users-status {
+  background: #eef2ff;
+  border: 1px solid #d7defc;
+  color: var(--brand);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.users-hub .hub-head {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.import-btn {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-left: 4px solid var(--brand);
+}
+
+.import-stats {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.import-new {
+  font-weight: 800;
+  color: var(--brand);
+}
+
+.import-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.import-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+}
+
+.user-inactive {
+  opacity: 0.55;
+}
+
+.user-id {
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+}
+
+.user-email {
+  font-size: 0.76rem;
+}
+
+.user-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.user-actions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.user-actions .link {
+  text-decoration: none;
+  font-weight: 600;
+}
+
+/* Org structure */
+.org-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.org-add input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.org-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.org-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 0.86rem;
+  background: #fafbfc;
+}
+
+.org-row input {
+  flex: 1;
+  min-width: 110px;
+  padding: 6px 9px;
+}
+
+.org-fn {
+  font-weight: 700;
+  color: #0e7490;
+}
+
+.org-dept {
+  font-weight: 700;
+}
+
+.org-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+}
+
+/* Change password */
+.pw-modal {
+  max-width: 380px;
+}
+
+.pw-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.pw-status {
+  text-align: center;
+}
+
+/* Feed department filter */
+.feed-dept {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: #475569;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  max-width: 210px;
+}
+
+.feed-dept.on {
+  background: #eef2ff;
+  color: var(--brand);
+  border-color: #d7defc;
+}
