@@ -925,7 +925,57 @@ def login(body: LoginIn):
 
 @api.get("/me")
 def me(admin: dict = Depends(current_admin)):
-    return admin
+    """Fresh identity: name from pkdb (renames show without re-login), org
+    profile (department/function) and the superadmin flag."""
+    out = {"email": admin["email"], "name": admin.get("name") or admin["email"]}
+    account = fetch_admin_by_email(admin["email"])
+    if account and account.get("name"):
+        out["name"] = account["name"]
+    with SessionLocal() as db:
+        p = (
+            db.query(UserProfileRow)
+            .filter(func.lower(UserProfileRow.email) == admin["email"].lower())
+            .first()
+        )
+        out["department"] = p.department if p else None
+        out["function"] = p.function if p else None
+    out["is_super"] = is_superadmin(admin["email"])
+    return out
+
+
+@api.get("/org/team")
+def org_team(
+    department: Optional[str] = Query(default=None),
+    admin: dict = Depends(current_admin),
+):
+    """Members of a department (default: mine) — any admin can see their team."""
+    with SessionLocal() as db:
+        if not department:
+            p = (
+                db.query(UserProfileRow)
+                .filter(func.lower(UserProfileRow.email) == admin["email"].lower())
+                .first()
+            )
+            department = p.department if p else None
+        if not department:
+            return {"department": None, "members": []}
+        profs = (
+            db.query(UserProfileRow)
+            .filter(UserProfileRow.department == department)
+            .all()
+        )
+    names = resolve_names({p.email for p in profs})
+    members = [
+        {
+            "name": names.get(p.email) or p.email.split("@")[0],
+            "email": p.email,
+            "function": p.function,
+            "sub_department": p.sub_department,
+        }
+        for p in profs
+    ]
+    members.sort(key=lambda m: m["name"].lower())
+    return {"department": department, "members": members}
 
 
 @api.get("/admins")

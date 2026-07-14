@@ -136,6 +136,28 @@ export default function App() {
     setMe({ email: data.email, name: data.name, is_super: !!data.is_super });
   }
 
+  // Keep identity fresh: renames / department changes show without re-login.
+  useEffect(() => {
+    if (!token) return;
+    authFetch("/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && d.email) {
+          const next = {
+            email: d.email,
+            name: d.name || d.email,
+            is_super: !!d.is_super,
+            department: d.department || null,
+            function: d.function || null,
+          };
+          setMe(next);
+          localStorage.setItem("me", JSON.stringify(next));
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   function logout() {
     localStorage.removeItem("token");
     localStorage.removeItem("me");
@@ -218,6 +240,7 @@ function Shell({ me, authFetch, logout }) {
   const [person, setPerson] = useState(null); // {actor, email, count}
   const [msgFocus, setMsgFocus] = useState(null); // {email, name} open a thread
   const [showPw, setShowPw] = useState(false); // change-my-password modal
+  const [teamOpen, setTeamOpen] = useState(false); // my-team panel
   const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
@@ -367,6 +390,15 @@ function Shell({ me, authFetch, logout }) {
         </nav>
         <div className="topbar-me">
           <span className="me-name">{me.name}</span>
+          {me.department && (
+            <button
+              className="me-dept"
+              onClick={() => setTeamOpen(true)}
+              title={`See the ${me.department} team`}
+            >
+              ({me.department})
+            </button>
+          )}
           <button className="link" onClick={() => setShowPw(true)} title="Change my password">
             🔑
           </button>
@@ -417,6 +449,17 @@ function Shell({ me, authFetch, logout }) {
             </a>
           ))}
           <div className="mm-divider" />
+          {me.department && (
+            <button
+              className="mm-item"
+              onClick={() => {
+                setTeamOpen(true);
+                setMenuOpen(false);
+              }}
+            >
+              👥 My team ({me.department})
+            </button>
+          )}
           <button
             className="mm-item"
             onClick={() => {
@@ -511,6 +554,22 @@ function Shell({ me, authFetch, logout }) {
       {view === "dash" && <Dashboard authFetch={authFetch} />}
       {view === "users" && isSuper && <UsersAdmin authFetch={authFetch} me={me} />}
       {showPw && <ChangePassword authFetch={authFetch} onClose={() => setShowPw(false)} />}
+      {teamOpen && (
+        <TeamPanel
+          department={me.department}
+          me={me}
+          authFetch={authFetch}
+          onClose={() => setTeamOpen(false)}
+          onOpenPerson={(name) => {
+            setTeamOpen(false);
+            openActor(name);
+          }}
+          onMessage={(p) => {
+            setTeamOpen(false);
+            openMessages(p);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2480,6 +2539,62 @@ function ChangePassword({ authFetch, onClose }) {
           <button type="submit">Change password</button>
           {status && <div className="muted pw-status">{status}</div>}
         </form>
+      </div>
+    </div>
+  );
+}
+
+// My team: everyone in a department, with jump-to-page and message shortcuts.
+function TeamPanel({ department, me, authFetch, onClose, onOpenPerson, onMessage }) {
+  const [team, setTeam] = useState({ department, members: [] });
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    authFetch(`/org/team?department=${encodeURIComponent(department || "")}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setTeam(d && d.members ? d : { department, members: [] });
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [department]);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal team-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <strong>👥 {team.department || "My team"}</strong>
+          <button className="link" onClick={onClose}>✕</button>
+        </div>
+        <div className="team-list">
+          {team.members.map((m) => (
+            <div key={m.email} className="team-row">
+              <span className="avatar sm" style={{ background: actorColor(m.name) }}>
+                {initials(m.name)}
+              </span>
+              <button className="team-name" onClick={() => onOpenPerson(m.name)}>
+                {m.name}
+                {m.email.toLowerCase() === (me.email || "").toLowerCase() && " (you)"}
+              </button>
+              {m.sub_department && <span className="muted team-sub">{m.sub_department}</span>}
+              {m.email.toLowerCase() !== (me.email || "").toLowerCase() && (
+                <button
+                  className="link team-msg"
+                  title={`Message ${m.name}`}
+                  onClick={() => onMessage({ email: m.email, name: m.name })}
+                >
+                  ✉
+                </button>
+              )}
+            </div>
+          ))}
+          {loaded && team.members.length === 0 && (
+            <div className="empty">
+              No team members mapped yet — departments come from the ownership sheet.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

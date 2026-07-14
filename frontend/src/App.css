@@ -2846,3 +2846,73 @@ button.link {
   color: var(--brand);
   border-color: #d7defc;
 }
+
+/* ---- Top-bar identity + team panel ---- */
+.me-dept {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--brand);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.me-dept:hover {
+  text-decoration: underline;
+  filter: none;
+}
+
+.team-modal {
+  max-width: 420px;
+  width: 92vw;
+}
+
+.team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.team-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+
+.team-row:hover {
+  background: #f4f4ff;
+}
+
+.team-name {
+  background: none;
+  border: none;
+  padding: 0;
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: #182026;
+  cursor: pointer;
+  text-align: left;
+}
+
+.team-name:hover {
+  color: var(--brand);
+  text-decoration: underline;
+  filter: none;
+}
+
+.team-sub {
+  font-size: 0.74rem;
+}
+
+.team-msg {
+  margin-left: auto;
+  text-decoration: none !important;
+  font-size: 1rem;
+}
