@@ -697,11 +697,9 @@ function DashRail({ overview, open, onOpenMessages, onOpenTasks, onOpenPrograms,
             <div className="empty">Nothing assigned to you 🎉</div>
           )}
         </div>
-        {(myTasks.length > 0 || myProgs.length > 0) && (
-          <button className="link lb-more" onClick={onOpenTasks}>
-            Open my tasks →
-          </button>
-        )}
+        <button className="link lb-more" onClick={onOpenTasks}>
+          Open my tasks →
+        </button>
       </div>
       <div className="lb-section">
         <div className="lb-title">
