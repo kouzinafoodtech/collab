@@ -4421,6 +4421,21 @@ def patch_program(
                     .first()
                 ) if row.owner_email else None
                 row.department = p.department if p else None
+        assignee_changed = False
+        if payload.assignee_email is not None:
+            # Only the program's owner or a superadmin can (re)assign it.
+            if not (
+                _norm_email(row.owner_email or "") == _norm_email(admin["email"])
+                or is_superadmin(admin["email"])
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only the program owner or a superadmin can assign it",
+                )
+            new_email, new_name = _owner_fields(payload.assignee_email or None)
+            assignee_changed = _norm_email(new_email or "") != _norm_email(row.assignee_email or "")
+            row.assignee_email, row.assignee_name = new_email, new_name
+            edited = True
         if payload.department is not None:
             row.department = payload.department.strip() or None
             edited = True
