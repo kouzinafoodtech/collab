@@ -1212,9 +1212,23 @@ def org_users(admin: dict = Depends(require_superadmin)):
         ]
     with SessionLocal() as db:
         profs = _profiles_by_email(db)
+        dept_rows = db.query(OrgDeptRow).filter(OrgDeptRow.active == 1).all()
+        prof_owned = (
+            db.query(UserProfileRow.department, UserProfileRow.owner)
+            .filter(UserProfileRow.department.isnot(None), UserProfileRow.owner.isnot(None))
+            .distinct()
+            .all()
+        )
+    # Every (department, owner) pairing we know about — curated + people-sheet.
+    owner_pairs = {(r.department, r.owner) for r in dept_rows if r.owner}
+    owner_pairs |= {(d, o) for d, o in prof_owned}
     out = []
     for a in accounts:
         p = profs.get(_norm_email(a["email"]))
+        home = p.department if p else None
+        owned = sorted(
+            {d for d, o in owner_pairs if _owner_matches(o, a["name"] or "") and d != home}
+        )
         out.append(
             {
                 "name": a["name"],
@@ -1223,7 +1237,8 @@ def org_users(admin: dict = Depends(require_superadmin)):
                 "is_super_admin": bool(a["is_super_admin"]),
                 "kpk_access": bool(a["has_kpk"]),
                 "function": p.function if p else None,
-                "department": p.department if p else None,
+                "department": home,
+                "owned_departments": owned,
                 "sub_department": p.sub_department if p else None,
                 "owner": p.owner if p else None,
                 "notes": p.notes if p else None,

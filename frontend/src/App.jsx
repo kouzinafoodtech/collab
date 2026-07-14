@@ -2868,8 +2868,10 @@ function UsersAdmin({ authFetch, me, onOpenDept }) {
   const visible = users.filter((u) => {
     if (deptFilter && u.department !== deptFilter) return false;
     if (!ql) return true;
-    return [u.name, u.email, u.function, u.department, u.sub_department, u.owner]
-      .some((v) => (v || "").toLowerCase().includes(ql));
+    return [
+      u.name, u.email, u.function, u.department, u.sub_department, u.owner,
+      ...(u.owned_departments || []),
+    ].some((v) => (v || "").toLowerCase().includes(ql));
   });
 
   return (
@@ -2944,6 +2946,11 @@ function UsersAdmin({ authFetch, me, onOpenDept }) {
               </div>
               <div className="user-tags">
                 {u.department && <span className="chip chip-order">{u.department}</span>}
+                {(u.owned_departments || []).map((d) => (
+                  <span key={d} className="chip chip-money" title="Owns this department">
+                    👑 {d}
+                  </span>
+                ))}
                 {u.function && <span className="chip chip-people">{u.function}</span>}
                 {u.is_super_admin && <span className="chip chip-money">super</span>}
                 <span className={`chip ${u.kpk_access ? "chip-stock" : "chip-other"}`}>
@@ -3058,6 +3065,9 @@ function EditUserForm({ user, structure, onSave, onCancel }) {
       <div className="prog-form-row">
         <input value={f.name} placeholder="Name" onChange={(e) => setF({ ...f, name: e.target.value })} />
         <span className="muted">{user.email}</span>
+        {(user.owned_departments || []).length > 0 && (
+          <span className="muted">👑 owns: {user.owned_departments.join(", ")}</span>
+        )}
       </div>
       <div className="prog-form-row">
         <select value={f.function} onChange={(e) => setF({ ...f, function: e.target.value })}>
