@@ -3067,3 +3067,160 @@ button.link {
 .mm-dept {
   font-size: 0.88rem;
 }
+
+/* ---- Tasks ---- */
+.mywork-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 6px 8px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mywork-item:hover {
+  background: #fff;
+  border-color: var(--line);
+  filter: none;
+}
+
+.mywork-dot {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+.mywork-dot.over {
+  background: #ef4444;
+}
+
+.mywork-dot.prog {
+  background: var(--brand);
+}
+
+.mywork-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mywork-due {
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.mywork-due.over {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.task-row {
+  border: 1px solid var(--line);
+  border-left: 4px solid #f59e0b;
+  border-radius: 10px;
+  padding: 9px 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-row.task-over {
+  border-left-color: #ef4444;
+  background: #fff8f8;
+}
+
+.task-row.task-done {
+  border-left-color: #22c55e;
+  opacity: 0.75;
+}
+
+.task-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.task-co {
+  font-weight: 500;
+  font-size: 0.8rem;
+}
+
+.task-sub {
+  font-size: 0.76rem;
+}
+
+.task-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.task-actions .link {
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.task-complete {
+  padding: 5px 12px;
+  font-size: 0.8rem;
+  border-radius: 999px;
+  background: #16a34a;
+}
+
+.tasks-team-head {
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  margin-top: 8px;
+}
+
+.tasks-team-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tasks-team-tools input[type="month"] {
+  width: auto;
+  padding: 7px 10px;
+  font-size: 0.85rem;
+}
+
+.tasks-member {
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

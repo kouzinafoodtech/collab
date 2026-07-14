@@ -241,6 +241,7 @@ function Shell({ me, authFetch, logout }) {
   const [msgFocus, setMsgFocus] = useState(null); // {email, name} open a thread
   const [showPw, setShowPw] = useState(false); // change-my-password modal
   const [deptView, setDeptView] = useState(null); // department page
+  const [tasksReturn, setTasksReturn] = useState("live");
   const [deptReturn, setDeptReturn] = useState("live"); // where ← goes back to
   const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
@@ -309,6 +310,13 @@ function Shell({ me, authFetch, logout }) {
   function openPerson(p) {
     setPerson(p);
     setView("live");
+  }
+
+  function openTasks() {
+    if (view !== "tasks") setTasksReturn(view);
+    setView("tasks");
+    setPeopleOpen(false);
+    setMenuOpen(false);
   }
 
   function openDept(d) {
@@ -450,6 +458,7 @@ function Shell({ me, authFetch, logout }) {
         <nav className="mobile-menu">
           {[
             ["live", "🔴 Live"],
+            ["tasks", `📋 My tasks${overview.my_tasks_overdue ? ` (${overview.my_tasks_overdue}!)` : ""}`],
             ["redflags", `🚩 Flags${redflags.total ? ` (${redflags.total})` : ""}`],
             ["programs", "📌 Programs"],
             ["feedback", "🎭 Feedback"],
@@ -461,6 +470,7 @@ function Shell({ me, authFetch, logout }) {
               className={`mm-item ${view === v ? "active" : ""}`}
               onClick={() => {
                 if (v === "live") goHome();
+                else if (v === "tasks") openTasks();
                 else setView(v);
                 setMenuOpen(false);
               }}
@@ -528,6 +538,11 @@ function Shell({ me, authFetch, logout }) {
             overview={overview}
             open={peopleOpen}
             onOpenMessages={openMessages}
+            onOpenTasks={openTasks}
+            onOpenPrograms={() => {
+              setView("programs");
+              setPeopleOpen(false);
+            }}
             onOpenFeedback={() => {
               setView("feedback");
               setPeopleOpen(false);
@@ -604,6 +619,14 @@ function Shell({ me, authFetch, logout }) {
       {view === "users" && isSuper && (
         <UsersAdmin authFetch={authFetch} me={me} onOpenDept={openDept} />
       )}
+      {view === "tasks" && (
+        <TasksView
+          me={me}
+          admins={admins}
+          authFetch={authFetch}
+          onBack={() => setView(tasksReturn)}
+        />
+      )}
       {view === "dept" && deptView && (
         <DeptView
           department={deptView}
@@ -636,12 +659,50 @@ function PersonRow({ entry, selected, onClick, rank }) {
   );
 }
 
-// Left rail: who owes replies + my own pending + open feedback.
-function DashRail({ overview, open, onOpenMessages, onOpenFeedback }) {
+// Left rail: my work (tasks + programs) + who owes replies + open feedback.
+function DashRail({ overview, open, onOpenMessages, onOpenTasks, onOpenPrograms, onOpenFeedback }) {
   const awaiting = overview.awaiting_response || [];
   const waiting = overview.messages_waiting || [];
+  const myTasks = (overview.my_tasks || []).filter((t) => t.status !== "completed");
+  const myProgs = overview.my_programs || [];
   return (
     <aside className={`dash-rail ${open ? "open" : ""}`}>
+      <div className="lb-section">
+        <div className="lb-title">
+          📋 My work
+          {overview.my_tasks_overdue > 0 && (
+            <span className="lb-title-badge">{overview.my_tasks_overdue}</span>
+          )}
+        </div>
+        <div className="lb-list">
+          {myTasks.slice(0, 5).map((t) => (
+            <button key={`t-${t.id}`} className="mywork-item" onClick={onOpenTasks}>
+              <span className={`mywork-dot ${t.overdue ? "over" : ""}`} />
+              <span className="mywork-title">{t.title}</span>
+              {t.cutoff_date && (
+                <span className={`mywork-due ${t.overdue ? "over" : ""}`}>
+                  {fmtDate(t.cutoff_date)}
+                </span>
+              )}
+            </button>
+          ))}
+          {myProgs.slice(0, 3).map((p) => (
+            <button key={`p-${p.id}`} className="mywork-item" onClick={onOpenPrograms}>
+              <span className="mywork-dot prog" />
+              <span className="mywork-title">📌 {p.name}</span>
+              {p.eta && <span className="mywork-due">{fmtDate(p.eta)}</span>}
+            </button>
+          ))}
+          {myTasks.length === 0 && myProgs.length === 0 && (
+            <div className="empty">Nothing assigned to you 🎉</div>
+          )}
+        </div>
+        {(myTasks.length > 0 || myProgs.length > 0) && (
+          <button className="link lb-more" onClick={onOpenTasks}>
+            Open my tasks →
+          </button>
+        )}
+      </div>
       <div className="lb-section">
         <div className="lb-title">
           Not responded
@@ -2569,6 +2630,379 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
           </button>
         )}
       </div>
+    </main>
+  );
+}
+
+// ---- Tasks: my list + department sheet (owner manages) ---------------------------
+
+const TASK_STATUS_OPTS = [
+  ["pending", "Pending"],
+  ["in_progress", "In Progress"],
+  ["completed", "Completed"],
+  ["on_hold", "On Hold"],
+];
+
+function TaskLine({ t, me, canManage, onPatch, showAssignee }) {
+  const [noting, setNoting] = useState(false);
+  const [note, setNote] = useState(t.challenges || "");
+  const mine = (t.assignee_email || "").toLowerCase() === (me.email || "").toLowerCase();
+  const done = t.status === "completed";
+  return (
+    <div className={`task-row ${done ? "task-done" : ""} ${t.overdue ? "task-over" : ""}`}>
+      <div className="task-main">
+        {showAssignee && (
+          <span className="avatar sm" style={{ background: actorColor(t.assignee_name || t.assignee_email) }}>
+            {initials(t.assignee_name || t.assignee_email)}
+          </span>
+        )}
+        <div className="task-id">
+          <span className="task-title">
+            {t.title}
+            {t.one_time && <span className="chip chip-other">one-time</span>}
+            {t.company && <span className="muted task-co"> · {t.company}</span>}
+          </span>
+          <span className="muted task-sub">
+            {showAssignee && `${t.assignee_name || t.assignee_email} · `}
+            {t.frequency ? `${t.frequency.replace("_", " ")} · ` : ""}
+            {t.cutoff_date
+              ? (t.overdue ? `⚠ due ${fmtDate(t.cutoff_date)}` : `due ${fmtDate(t.cutoff_date)}`)
+              : "no cutoff"}
+            {done && t.days_taken != null && ` · ${t.days_taken > 0 ? `+${t.days_taken}d late` : t.days_taken === 0 ? "on time" : `${-t.days_taken}d early`}`}
+            {t.challenges && ` · 📝 ${t.challenges}`}
+          </span>
+        </div>
+        <span className="task-actions">
+          {(mine || canManage) && !done && (
+            <>
+              {t.status !== "in_progress" && (
+                <button className="link" onClick={() => onPatch(t.id, { status: "in_progress" })}>
+                  start
+                </button>
+              )}
+              <button className="task-complete" onClick={() => onPatch(t.id, { status: "completed" })}>
+                ✓ done
+              </button>
+              <button className="link" onClick={() => setNoting(!noting)}>📝</button>
+            </>
+          )}
+          {(mine || canManage) && done && (
+            <button className="link" onClick={() => onPatch(t.id, { status: "pending" })}>
+              reopen
+            </button>
+          )}
+        </span>
+      </div>
+      {noting && (
+        <form
+          className="conv-reply-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onPatch(t.id, { challenges: note });
+            setNoting(false);
+          }}
+        >
+          <input
+            className="grow" autoFocus placeholder="Challenges / notes…"
+            value={note} onChange={(e) => setNote(e.target.value)}
+          />
+          <button type="submit">Save</button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function TasksView({ me, admins, authFetch, onBack }) {
+  const [my, setMy] = useState({ tasks: [], overdue: 0, open: 0 });
+  const [team, setTeam] = useState(null);
+  const [teamOpenView, setTeamOpenView] = useState(false);
+  const [period, setPeriod] = useState("");
+  const [assignFor, setAssignFor] = useState(false);
+  const [tform, setTform] = useState({ title: "", assignee_email: "", cutoff_date: "", notes: "" });
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [templates, setTemplates] = useState([]);
+  const [importFile, setImportFile] = useState(null);
+  const [importPlan, setImportPlan] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [status, setStatus] = useState("");
+
+  const load = useCallback(() => {
+    authFetch("/tasks/my").then((r) => r.json()).then(setMy).catch(() => {});
+    authFetch(`/tasks/team${period ? `?period=${period}` : ""}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setTeam(d && d.tasks ? d : null))
+      .catch(() => setTeam(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period]);
+
+  useEffect(load, [load]);
+
+  const loadTemplates = useCallback(() => {
+    if (!team?.department) return;
+    authFetch(`/tasks/templates?department=${encodeURIComponent(team.department)}`)
+      .then((r) => (r.ok ? r.json() : { templates: [] }))
+      .then((d) => setTemplates(d.templates || []))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [team?.department]);
+
+  useEffect(() => {
+    if (showTemplates) loadTemplates();
+  }, [showTemplates, loadTemplates]);
+
+  async function patchTask(id, body) {
+    const res = await authFetch(`/tasks/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    if (res && res.ok) load();
+    else {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      setStatus(errText(d, "Update failed"));
+    }
+  }
+
+  async function assign(e) {
+    e.preventDefault();
+    if (!tform.title.trim() || !tform.assignee_email) return;
+    const res = await authFetch("/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        title: tform.title.trim(),
+        assignee_email: tform.assignee_email,
+        cutoff_date: tform.cutoff_date || null,
+        notes: tform.notes || null,
+        department: team?.department || null,
+      }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setTform({ title: "", assignee_email: "", cutoff_date: "", notes: "" });
+      setAssignFor(false);
+      setStatus("Task assigned — they've been messaged ✓");
+      load();
+    } else {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      setStatus(errText(d, "Could not assign"));
+    }
+  }
+
+  async function runImport(apply) {
+    if (!importFile || !team?.department) return;
+    setImporting(true);
+    const fd = new FormData();
+    fd.append("file", importFile);
+    try {
+      const res = await authFetch(
+        `/tasks/import?department=${encodeURIComponent(team.department)}&apply=${apply}`,
+        { method: "POST", body: fd }
+      );
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) setStatus(errText(d, "Import failed"));
+      else {
+        setImportPlan(d);
+        if (d.applied) {
+          setStatus(`Imported ${d.created} recurring tasks ✓`);
+          setImportFile(null);
+          load();
+          loadTemplates();
+        }
+      }
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const openT = my.tasks.filter((t) => t.status !== "completed");
+  const overdueT = openT.filter((t) => t.overdue);
+  const upcomingT = openT.filter((t) => !t.overdue);
+  const doneT = my.tasks.filter((t) => t.status === "completed");
+  const canManage = !!team?.can_manage;
+
+  const byAssignee = {};
+  for (const t of team?.tasks || []) {
+    const k = t.assignee_name || t.assignee_email;
+    (byAssignee[k] = byAssignee[k] || []).push(t);
+  }
+
+  return (
+    <main className="hub tasks-hub">
+      <div className="conv-head">
+        <button className="link conv-back" onClick={onBack}>← Back</button>
+        <strong className="dept-title">📋 Tasks</strong>
+        {my.overdue > 0 && <span className="conv-wait-count">{my.overdue} overdue</span>}
+      </div>
+      {status && <div className="users-status">{status}</div>}
+
+      {overdueT.length > 0 && (
+        <div className="conv-section conv-waiting">
+          <div className="conv-section-title">⚠ Overdue</div>
+          {overdueT.map((t) => (
+            <TaskLine key={t.id} t={t} me={me} canManage={canManage} onPatch={patchTask} />
+          ))}
+        </div>
+      )}
+      <div className="conv-section">
+        <div className="conv-section-title">My open tasks · {upcomingT.length}</div>
+        {upcomingT.map((t) => (
+          <TaskLine key={t.id} t={t} me={me} canManage={canManage} onPatch={patchTask} />
+        ))}
+        {upcomingT.length === 0 && <div className="empty">Nothing pending 🎉</div>}
+      </div>
+      {doneT.length > 0 && (
+        <div className="conv-section">
+          <div className="conv-section-title">✅ Done this month · {doneT.length}</div>
+          {doneT.map((t) => (
+            <TaskLine key={t.id} t={t} me={me} canManage={canManage} onPatch={patchTask} />
+          ))}
+        </div>
+      )}
+
+      {team && (
+        <>
+          <div className="hub-head tasks-team-head">
+            <strong>🏛 {team.department} · {team.period}</strong>
+            <span className="tasks-team-tools">
+              <input
+                type="month" value={period || team.period}
+                onChange={(e) => setPeriod(e.target.value)}
+              />
+              <button className="chip-toggle" onClick={() => setTeamOpenView(!teamOpenView)}>
+                {teamOpenView ? "Hide team sheet" : `Team sheet (${team.tasks.length})`}
+              </button>
+              {canManage && (
+                <>
+                  <button onClick={() => setAssignFor(!assignFor)}>
+                    {assignFor ? "Cancel" : "+ Assign task"}
+                  </button>
+                  <button className="chip-toggle" onClick={() => setShowTemplates(!showTemplates)}>
+                    🔁 Recurring ({templates.length || "…"})
+                  </button>
+                  <label className="import-btn chip-toggle">
+                    📄 {importFile ? importFile.name : "Import tracker"}
+                    <input
+                      type="file" accept=".xlsx" hidden
+                      onClick={(e) => { e.target.value = ""; }}
+                      onChange={(e) => {
+                        setImportPlan(null);
+                        setImportFile(e.target.files?.[0] || null);
+                      }}
+                    />
+                  </label>
+                  {importFile && !importPlan?.applied && (
+                    <button onClick={() => runImport(false)} disabled={importing}>
+                      {importing ? "Reading…" : "Preview"}
+                    </button>
+                  )}
+                </>
+              )}
+            </span>
+          </div>
+
+          {importPlan && !importPlan.applied && (
+            <div className="card import-preview">
+              <strong>Import preview — sheet “{importPlan.sheet}”</strong>
+              <div className="import-stats">
+                <span className="import-new">{importPlan.templates} recurring tasks</span>
+                {Object.entries(importPlan.by_member || {}).map(([m, n]) => (
+                  <span key={m}>{m}: {n}</span>
+                ))}
+                {(importPlan.unmatched_members || []).length > 0 && (
+                  <span>⚠ unmatched: {importPlan.unmatched_members.join(", ")}</span>
+                )}
+              </div>
+              <div className="import-actions">
+                <button onClick={() => runImport(true)} disabled={importing}>
+                  {importing ? "Applying…" : `Apply — create ${importPlan.templates} recurring tasks`}
+                </button>
+                <button className="link" onClick={() => setImportPlan(null)}>cancel</button>
+              </div>
+            </div>
+          )}
+
+          {assignFor && canManage && (
+            <form className="card prog-form" onSubmit={assign}>
+              <input
+                autoFocus placeholder="Task…" value={tform.title}
+                onChange={(e) => setTform({ ...tform, title: e.target.value })}
+              />
+              <div className="prog-form-row">
+                <select
+                  value={tform.assignee_email}
+                  onChange={(e) => setTform({ ...tform, assignee_email: e.target.value })}
+                >
+                  <option value="">Assign to…</option>
+                  {admins.map((a) => (
+                    <option key={a.email} value={a.email}>{a.name || a.email}</option>
+                  ))}
+                </select>
+                <input
+                  type="date" value={tform.cutoff_date}
+                  onChange={(e) => setTform({ ...tform, cutoff_date: e.target.value })}
+                />
+                <input
+                  placeholder="Notes (optional)" value={tform.notes}
+                  onChange={(e) => setTform({ ...tform, notes: e.target.value })}
+                />
+                <button type="submit">Assign</button>
+              </div>
+              <div className="muted">One-time task — the assignee gets a message (and email).</div>
+            </form>
+          )}
+
+          {showTemplates && canManage && (
+            <div className="card org-card">
+              <strong>🔁 Recurring tasks · {team.department}</strong>
+              <div className="org-rows">
+                {templates.map((tp) => (
+                  <div key={tp.id} className="org-row">
+                    <span className="org-dept">{tp.title}</span>
+                    <span className="muted">{tp.assignee_name}</span>
+                    <span className="muted">{(tp.frequency || "").replace("_", " ")}</span>
+                    <span className="muted">
+                      {tp.cutoff_day ? `day ${tp.cutoff_day}` : "—"}
+                    </span>
+                    <span className="org-actions">
+                      <button
+                        className="link"
+                        onClick={async () => {
+                          if (!window.confirm("Stop this recurring task?")) return;
+                          await authFetch(`/tasks/templates/${tp.id}`, { method: "DELETE" }).catch(() => {});
+                          loadTemplates();
+                        }}
+                      >
+                        stop
+                      </button>
+                    </span>
+                  </div>
+                ))}
+                {templates.length === 0 && (
+                  <div className="empty">No recurring tasks yet — import the tracker or assign above.</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {teamOpenView && (
+            <div className="conv-section">
+              {Object.entries(byAssignee).map(([name, list]) => (
+                <div key={name} className="tasks-member">
+                  <div className="conv-section-title">
+                    {name} · {list.filter((t) => t.status === "completed").length}/{list.length} done
+                  </div>
+                  {list.map((t) => (
+                    <TaskLine
+                      key={t.id} t={t} me={me} canManage={canManage}
+                      onPatch={patchTask} showAssignee={false}
+                    />
+                  ))}
+                </div>
+              ))}
+              {team.tasks.length === 0 && <div className="empty">No tasks this month.</div>}
+            </div>
+          )}
+        </>
+      )}
     </main>
   );
 }

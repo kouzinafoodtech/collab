@@ -229,6 +229,52 @@ class UserProfileRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class TaskTemplateRow(Base):
+    """A recurring task definition (Aparna's tracker rows). Instances spawn
+    per month, lazily, into TaskRow."""
+    __tablename__ = "task_templates"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(500), nullable=False)
+    assignee_email = Column(String(255), nullable=False, index=True)
+    department = Column(String(255), nullable=True, index=True)
+    company = Column(String(64), nullable=True)
+    support_by = Column(String(255), nullable=True)
+    frequency = Column(String(24), nullable=False, default="monthly")
+    # daily | weekly | monthly | quarterly | half_yearly | yearly | need_basis
+    cutoff_day = Column(Integer, nullable=True)      # day-of-month the task is due
+    due_months = Column(String(64), nullable=True)   # csv of months (1-12) for q/h/y
+    notes = Column(Text, nullable=True)
+    active = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TaskRow(Base):
+    """One task occurrence — a template's monthly instance, or a one-time
+    task (template_id NULL). Mirrors the tracker sheet's columns."""
+    __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint("template_id", "period", name="uq_template_period"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    template_id = Column(Integer, nullable=True, index=True)
+    title = Column(String(500), nullable=False)
+    assignee_email = Column(String(255), nullable=False, index=True)
+    department = Column(String(255), nullable=True, index=True)
+    company = Column(String(64), nullable=True)
+    support_by = Column(String(255), nullable=True)
+    frequency = Column(String(24), nullable=True)
+    period = Column(String(7), nullable=True, index=True)  # YYYY-MM (null: one-time)
+    cutoff_date = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(16), nullable=False, default="pending")
+    # pending | in_progress | completed | on_hold
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    challenges = Column(Text, nullable=True)
+    findings = Column(Text, nullable=True)
+    created_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class OrgDeptRow(Base):
     """Company org structure (Function → Department → Leader → Owner),
     editable by superadmins; seeds the dropdowns and the feed filter."""
@@ -1722,6 +1768,594 @@ async def org_import(
     return plan
 
 
+
+# ---- Tasks (recurring + one-time) — visibility scoped to the department ---------
+
+TASK_STATUSES = {"pending", "in_progress", "completed", "on_hold"}
+_FREQ_MAP = {
+    "daily": "daily", "weekly": "weekly", "monthly": "monthly",
+    "quarterly": "quarterly", "half yearly": "half_yearly",
+    "half_yearly": "half_yearly", "yearly": "yearly", "annual": "yearly",
+    "need basis": "need_basis", "need_basis": "need_basis",
+}
+
+
+def _norm_freq(raw: Optional[str]) -> str:
+    s = (raw or "").strip().lower()
+    for key, val in _FREQ_MAP.items():
+        if key in s:
+            return val
+    return "monthly"
+
+
+def owned_departments_of(admin: dict) -> set:
+    """Departments this admin owns (curated rows + people-sheet pairings)."""
+    name = admin.get("name") or ""
+    with SessionLocal() as db:
+        rows = db.query(OrgDeptRow).filter(OrgDeptRow.active == 1).all()
+        pairs = (
+            db.query(UserProfileRow.department, UserProfileRow.owner)
+            .filter(UserProfileRow.department.isnot(None), UserProfileRow.owner.isnot(None))
+            .distinct()
+            .all()
+        )
+    owned = {r.department for r in rows if r.owner and _owner_matches(r.owner, name)}
+    owned |= {d for d, o in pairs if _owner_matches(o, name)}
+    return owned
+
+
+def _my_department(email: str) -> Optional[str]:
+    with SessionLocal() as db:
+        p = (
+            db.query(UserProfileRow)
+            .filter(func.lower(UserProfileRow.email) == (email or "").lower())
+            .first()
+        )
+        return p.department if p else None
+
+
+def _can_manage_tasks(admin: dict, department: Optional[str]) -> bool:
+    if is_superadmin(admin["email"]):
+        return True
+    return bool(department) and department in owned_departments_of(admin)
+
+
+def _task_visible(t, admin: dict, my_dept: Optional[str], owned: set) -> bool:
+    if _norm_email(t.assignee_email) == _norm_email(admin["email"]):
+        return True
+    if t.department and (t.department == my_dept or t.department in owned):
+        return True
+    return is_superadmin(admin["email"])
+
+
+def _current_period(now: datetime) -> str:
+    return f"{now.year:04d}-{now.month:02d}"
+
+
+def _month_due(freq: str, due_months: Optional[str], month: int) -> bool:
+    if freq in ("daily", "weekly", "monthly"):
+        return True
+    if freq == "need_basis":
+        return False
+    months = [int(m) for m in (due_months or "").split(",") if m.strip().isdigit()]
+    return month in months if months else False
+
+
+def ensure_task_instances(now: datetime):
+    """Materialise this month's instances from active templates (idempotent)."""
+    period = _current_period(now)
+    import calendar
+    last_day = calendar.monthrange(now.year, now.month)[1]
+    with SessionLocal() as db:
+        templates = db.query(TaskTemplateRow).filter(TaskTemplateRow.active == 1).all()
+        existing = {
+            tid for (tid,) in db.query(TaskRow.template_id)
+            .filter(TaskRow.period == period, TaskRow.template_id.isnot(None))
+        }
+        added = False
+        for t in templates:
+            if t.id in existing or not _month_due(t.frequency, t.due_months, now.month):
+                continue
+            cutoff = None
+            if t.cutoff_day:
+                cutoff = datetime(now.year, now.month, min(int(t.cutoff_day), last_day))
+            db.add(
+                TaskRow(
+                    template_id=t.id, title=t.title, assignee_email=t.assignee_email,
+                    department=t.department, company=t.company, support_by=t.support_by,
+                    frequency=t.frequency, period=period, cutoff_date=cutoff,
+                    status="pending", created_by="system",
+                )
+            )
+            added = True
+        if added:
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()  # racing replica inserted the same period first
+
+
+def _serialize_task(t, now: datetime) -> dict:
+    days_taken = None
+    if t.completed_at and t.cutoff_date:
+        days_taken = (t.completed_at.date() - t.cutoff_date.date()).days
+    overdue = bool(
+        t.cutoff_date and t.status != "completed" and t.cutoff_date < now
+    )
+    return {
+        "id": t.id,
+        "template_id": t.template_id,
+        "one_time": t.template_id is None,
+        "title": t.title,
+        "assignee_email": t.assignee_email,
+        "department": t.department,
+        "company": t.company,
+        "support_by": t.support_by,
+        "frequency": t.frequency,
+        "period": t.period,
+        "cutoff_date": t.cutoff_date.date().isoformat() if t.cutoff_date else None,
+        "status": t.status,
+        "completed_at": _iso_utc(t.completed_at) if t.completed_at else None,
+        "days_taken": days_taken,
+        "overdue": overdue,
+        "challenges": t.challenges,
+        "findings": t.findings,
+        "created_by": t.created_by,
+    }
+
+
+class TaskIn(BaseModel):
+    title: str = Field(..., min_length=3, max_length=500)
+    assignee_email: str = Field(..., min_length=5, max_length=255)
+    cutoff_date: Optional[str] = None  # YYYY-MM-DD
+    company: Optional[str] = Field(default=None, max_length=64)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    department: Optional[str] = Field(default=None, max_length=255)
+
+
+class TaskPatch(BaseModel):
+    status: Optional[str] = None
+    challenges: Optional[str] = Field(default=None, max_length=2000)
+    findings: Optional[str] = Field(default=None, max_length=2000)
+    cutoff_date: Optional[str] = None
+    assignee_email: Optional[str] = None
+
+
+class TemplateTaskIn(BaseModel):
+    title: str = Field(..., min_length=3, max_length=500)
+    assignee_email: str = Field(..., min_length=5, max_length=255)
+    department: Optional[str] = Field(default=None, max_length=255)
+    company: Optional[str] = Field(default=None, max_length=64)
+    support_by: Optional[str] = Field(default=None, max_length=255)
+    frequency: str = Field(default="monthly")
+    cutoff_day: Optional[int] = Field(default=None, ge=1, le=31)
+    due_months: Optional[str] = Field(default=None, max_length=64)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+@api.get("/tasks/my")
+def my_tasks(admin: dict = Depends(current_admin)):
+    """Everything waiting on ME: this month's instances, any older incomplete
+    ones, and one-time tasks. Powers the home-page My-work rail."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    ensure_task_instances(now)
+    me = _norm_email(admin["email"])
+    period = _current_period(now)
+    with SessionLocal() as db:
+        rows = (
+            db.query(TaskRow)
+            .filter(
+                func.lower(TaskRow.assignee_email) == me,
+                or_(
+                    TaskRow.period == period,
+                    TaskRow.period.is_(None),
+                    TaskRow.status != "completed",
+                ),
+            )
+            .order_by(TaskRow.cutoff_date.is_(None), TaskRow.cutoff_date.asc())
+            .limit(300)
+            .all()
+        )
+    tasks = [_serialize_task(t, now) for t in rows]
+    # completed one-time/old tasks stay out after a week so the list stays tidy
+    week_ago = (now - timedelta(days=7))
+    tasks = [
+        t for t in tasks
+        if t["status"] != "completed" or t["period"] == period
+        or (t["completed_at"] or "") >= week_ago.strftime("%Y-%m-%d")
+    ]
+    open_t = [t for t in tasks if t["status"] != "completed"]
+    return {
+        "tasks": tasks,
+        "period": period,
+        "overdue": sum(1 for t in open_t if t["overdue"]),
+        "open": len(open_t),
+    }
+
+
+@api.get("/tasks/team")
+def team_tasks(
+    department: Optional[str] = Query(default=None),
+    period: Optional[str] = Query(default=None),
+    admin: dict = Depends(current_admin),
+):
+    """A department's task sheet for one month (Aparna's per-month tab).
+    Visible to that department's members, its owner, and superadmins."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    ensure_task_instances(now)
+    my_dept = _my_department(admin["email"])
+    owned = owned_departments_of(admin)
+    department = department or my_dept
+    if not department:
+        return {"department": None, "tasks": [], "period": period or _current_period(now)}
+    if not (
+        is_superadmin(admin["email"]) or department == my_dept or department in owned
+    ):
+        raise HTTPException(status_code=403, detail="Tasks are visible to the department only")
+    period = period or _current_period(now)
+    with SessionLocal() as db:
+        rows = (
+            db.query(TaskRow)
+            .filter(
+                TaskRow.department == department,
+                or_(TaskRow.period == period, TaskRow.period.is_(None)),
+            )
+            .order_by(TaskRow.assignee_email, TaskRow.cutoff_date.asc())
+            .limit(500)
+            .all()
+        )
+    tasks = [_serialize_task(t, now) for t in rows]
+    if period != _current_period(now):
+        tasks = [t for t in tasks if t["period"] == period]
+    names = resolve_names({t["assignee_email"] for t in tasks})
+    for t in tasks:
+        t["assignee_name"] = (
+            names.get(t["assignee_email"])
+            or names.get(t["assignee_email"].lower())
+            or t["assignee_email"].split("@")[0]
+        )
+    return {
+        "department": department,
+        "period": period,
+        "tasks": tasks,
+        "can_manage": _can_manage_tasks(admin, department),
+    }
+
+
+@api.post("/tasks", status_code=201)
+def create_task(
+    payload: TaskIn,
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(current_admin),
+):
+    """One-time task — assigned by a department owner or superadmin, to anyone."""
+    assignee = _norm_email(payload.assignee_email)
+    if not is_active_admin(assignee) and not is_active_admin(payload.assignee_email):
+        raise HTTPException(status_code=400, detail="Assignee must be an active admin")
+    dept = (payload.department or "").strip() or _my_department(assignee)
+    if not (owned_departments_of(admin) or is_superadmin(admin["email"])):
+        raise HTTPException(
+            status_code=403, detail="Only department owners can assign tasks"
+        )
+    cutoff = None
+    if payload.cutoff_date:
+        try:
+            cutoff = datetime.fromisoformat(payload.cutoff_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Bad cutoff date")
+    with SessionLocal() as db:
+        row = TaskRow(
+            title=payload.title.strip(), assignee_email=assignee, department=dept,
+            company=(payload.company or "").strip() or None, frequency=None,
+            period=None, cutoff_date=cutoff, status="pending",
+            challenges=(payload.notes or "").strip() or None,
+            created_by=admin["email"],
+        )
+        db.add(row)
+        db.commit()
+        tid = row.id
+    who = admin.get("name") or admin["email"]
+    note = f"📋 New task for you: “{payload.title.strip()}”"
+    if cutoff:
+        note += f" · due {cutoff.strftime('%d %b %Y')}"
+    note += f" — assigned by {who}"
+    with SessionLocal() as db:
+        db.add(MessageRow(sender=admin["email"], recipient=assignee, body=note, is_private=1))
+        db.commit()
+    if email_enabled():
+        background_tasks.add_task(
+            send_email, [assignee],
+            f"[Kouzina Live] New task: {payload.title.strip()}",
+            f"{note}\n\nOpen: https://live.kftpl.com",
+        )
+    emit_live_event(
+        who, "task_assigned", f"assigned task · “{payload.title.strip()[:70]}”",
+        {"module": "Tasks", "department": dept},
+    )
+    return {"ok": True, "id": tid}
+
+
+@api.patch("/tasks/{task_id}")
+def update_task(task_id: int, payload: TaskPatch, admin: dict = Depends(current_admin)):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with SessionLocal() as db:
+        row = db.get(TaskRow, task_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        is_assignee = _norm_email(row.assignee_email) == _norm_email(admin["email"])
+        if not (is_assignee or _can_manage_tasks(admin, row.department)):
+            raise HTTPException(status_code=403, detail="Not your task")
+        completed_now = False
+        if payload.status is not None:
+            if payload.status not in TASK_STATUSES:
+                raise HTTPException(status_code=400, detail="Bad status")
+            completed_now = payload.status == "completed" and row.status != "completed"
+            row.status = payload.status
+            row.completed_at = now if payload.status == "completed" else None
+        if payload.challenges is not None:
+            row.challenges = payload.challenges.strip() or None
+        if payload.findings is not None:
+            row.findings = payload.findings.strip() or None
+        if payload.cutoff_date is not None and _can_manage_tasks(admin, row.department):
+            row.cutoff_date = (
+                datetime.fromisoformat(payload.cutoff_date) if payload.cutoff_date else None
+            )
+        if payload.assignee_email is not None and _can_manage_tasks(admin, row.department):
+            row.assignee_email = _norm_email(payload.assignee_email)
+        db.commit()
+        out = _serialize_task(row, now)
+        title = row.title
+    if completed_now:
+        emit_live_event(
+            admin.get("name") or admin["email"], "task_completed",
+            f"completed task · “{title[:70]}”",
+            {"module": "Tasks", "department": out["department"]},
+        )
+    return out
+
+
+@api.delete("/tasks/{task_id}")
+def delete_task(task_id: int, admin: dict = Depends(current_admin)):
+    with SessionLocal() as db:
+        row = db.get(TaskRow, task_id)
+        if not row:
+            return {"ok": True}
+        if not _can_manage_tasks(admin, row.department):
+            raise HTTPException(status_code=403, detail="Only department owners can remove tasks")
+        db.delete(row)
+        db.commit()
+    return {"ok": True}
+
+
+# ---- Recurring templates (owner/superadmin) --------------------------------------
+
+@api.get("/tasks/templates")
+def list_task_templates(
+    department: Optional[str] = Query(default=None),
+    admin: dict = Depends(current_admin),
+):
+    department = department or _my_department(admin["email"])
+    if not _can_manage_tasks(admin, department):
+        raise HTTPException(status_code=403, detail="Only department owners manage recurring tasks")
+    with SessionLocal() as db:
+        rows = (
+            db.query(TaskTemplateRow)
+            .filter(TaskTemplateRow.active == 1, TaskTemplateRow.department == department)
+            .order_by(TaskTemplateRow.assignee_email, TaskTemplateRow.title)
+            .all()
+        )
+    names = resolve_names({r.assignee_email for r in rows})
+    return {
+        "department": department,
+        "templates": [
+            {
+                "id": r.id, "title": r.title, "assignee_email": r.assignee_email,
+                "assignee_name": names.get(r.assignee_email)
+                or names.get(r.assignee_email.lower())
+                or r.assignee_email.split("@")[0],
+                "company": r.company, "support_by": r.support_by,
+                "frequency": r.frequency, "cutoff_day": r.cutoff_day,
+                "due_months": r.due_months, "notes": r.notes,
+            }
+            for r in rows
+        ],
+    }
+
+
+@api.post("/tasks/templates", status_code=201)
+def add_task_template(payload: TemplateTaskIn, admin: dict = Depends(current_admin)):
+    dept = (payload.department or "").strip() or _my_department(admin["email"])
+    if not _can_manage_tasks(admin, dept):
+        raise HTTPException(status_code=403, detail="Only department owners manage recurring tasks")
+    with SessionLocal() as db:
+        row = TaskTemplateRow(
+            title=payload.title.strip(), assignee_email=_norm_email(payload.assignee_email),
+            department=dept, company=(payload.company or "").strip() or None,
+            support_by=(payload.support_by or "").strip() or None,
+            frequency=_norm_freq(payload.frequency), cutoff_day=payload.cutoff_day,
+            due_months=(payload.due_months or "").strip() or None,
+            notes=(payload.notes or "").strip() or None, created_by=admin["email"],
+        )
+        db.add(row)
+        db.commit()
+        return {"ok": True, "id": row.id}
+
+
+@api.patch("/tasks/templates/{template_id}")
+def edit_task_template(
+    template_id: int, payload: TemplateTaskIn, admin: dict = Depends(current_admin)
+):
+    with SessionLocal() as db:
+        row = db.get(TaskTemplateRow, template_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not _can_manage_tasks(admin, row.department):
+            raise HTTPException(status_code=403, detail="Only department owners manage recurring tasks")
+        row.title = payload.title.strip()
+        row.assignee_email = _norm_email(payload.assignee_email)
+        row.company = (payload.company or "").strip() or None
+        row.support_by = (payload.support_by or "").strip() or None
+        row.frequency = _norm_freq(payload.frequency)
+        row.cutoff_day = payload.cutoff_day
+        row.due_months = (payload.due_months or "").strip() or None
+        row.notes = (payload.notes or "").strip() or None
+        db.commit()
+    return {"ok": True}
+
+
+@api.delete("/tasks/templates/{template_id}")
+def remove_task_template(template_id: int, admin: dict = Depends(current_admin)):
+    with SessionLocal() as db:
+        row = db.get(TaskTemplateRow, template_id)
+        if row:
+            if not _can_manage_tasks(admin, row.department):
+                raise HTTPException(status_code=403, detail="Only department owners manage recurring tasks")
+            row.active = 0
+            db.commit()
+    return {"ok": True}
+
+
+@api.post("/tasks/import")
+async def import_task_tracker(
+    file: UploadFile = File(...),
+    department: str = Query(...),
+    apply: bool = Query(default=False),
+    admin: dict = Depends(current_admin),
+):
+    """Import a task-tracker xlsx (Member / Task / Company / Support By /
+    Frequency / Cutoff Date …) into recurring templates for one department.
+    Uses the LAST sheet (most recent month). Member names resolve against the
+    department's team first, then all admins."""
+    if not _can_manage_tasks(admin, department):
+        raise HTTPException(status_code=403, detail="Only department owners can import")
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(await file.read()), data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read that file — is it .xlsx?")
+
+    ws = wb.worksheets[-1]
+    rows = list(ws.iter_rows(values_only=True))
+    header_idx = next(
+        (i for i, r in enumerate(rows)
+         if r and any(str(c or "").strip().lower() == "member" for c in r)),
+        None,
+    )
+    if header_idx is None:
+        raise HTTPException(status_code=400, detail="No 'Member' header found")
+    hdr = [str(c or "").strip().lower() for c in rows[header_idx]]
+
+    def col(*needles):
+        for i, h in enumerate(hdr):
+            if h and all(n in h for n in needles):
+                return i
+        return None
+
+    c_member, c_task = col("member"), col("task")
+    c_company, c_support = col("company"), col("support")
+    c_freq, c_cut = col("frequency"), col("cutoff", "date")
+    c_notes, c_find = col("challenges"), col("findings")
+    if c_member is None or c_task is None:
+        raise HTTPException(status_code=400, detail="Sheet needs Member and Task columns")
+
+    # Resolve short member names within the department first (disambiguates
+    # e.g. the two Shashanks), falling back to a unique global match.
+    with SessionLocal() as db:
+        dept_emails = [
+            p.email for p in db.query(UserProfileRow)
+            .filter(UserProfileRow.department == department)
+        ]
+    dept_names = resolve_names(set(dept_emails))
+    dept_members = [(e, dept_names.get(e) or dept_names.get(e.lower()) or "") for e in dept_emails]
+    all_admins = list_active_admins()
+
+    def resolve_member(short: str) -> Optional[str]:
+        hits = [e for e, n in dept_members if _owner_matches(short, n)]
+        if len(hits) == 1:
+            return _norm_email(hits[0])
+        hits = [a["email"] for a in all_admins if _owner_matches(short, a.get("name") or "")]
+        return _norm_email(hits[0]) if len(hits) == 1 else None
+
+    def getv(r, idx):
+        return (str(r[idx]).strip() if idx is not None and idx < len(r) and r[idx] is not None else None)
+
+    month = None
+    templates, unmatched = [], []
+    for r in rows[header_idx + 1:]:
+        member, task = getv(r, c_member), getv(r, c_task)
+        if not member or not task or member == "—" or member.lower() == "member":
+            continue  # blank / repeated header rows
+        email = resolve_member(member)
+        if not email:
+            unmatched.append(member)
+            continue
+        cut_raw = r[c_cut] if c_cut is not None and c_cut < len(r) else None
+        cutoff_day = None
+        if isinstance(cut_raw, datetime):
+            cutoff_day, month = cut_raw.day, cut_raw.month
+        elif cut_raw and str(cut_raw).strip() not in ("—", "-", ""):
+            try:
+                cutoff_day = datetime.strptime(str(cut_raw).strip(), "%d-%b-%Y").day
+            except ValueError:
+                pass
+        freq = _norm_freq(getv(r, c_freq))
+        due_months = None
+        if freq in ("quarterly", "half_yearly", "yearly") and month:
+            step = {"quarterly": 3, "half_yearly": 6, "yearly": 12}[freq]
+            due_months = ",".join(str(((month - 1 + k * step) % 12) + 1) for k in range(12 // step))
+        templates.append(
+            {
+                "title": task, "assignee_email": email, "member": member,
+                "company": getv(r, c_company), "support_by": getv(r, c_support),
+                "frequency": freq, "cutoff_day": cutoff_day, "due_months": due_months,
+                "notes": getv(r, c_notes), "findings": getv(r, c_find),
+            }
+        )
+
+    plan = {
+        "sheet": ws.title,
+        "templates": len(templates),
+        "by_member": {},
+        "unmatched_members": sorted(set(unmatched)),
+        "applied": False,
+    }
+    for t in templates:
+        plan["by_member"][t["member"]] = plan["by_member"].get(t["member"], 0) + 1
+    if not apply:
+        return plan
+
+    created = 0
+    with SessionLocal() as db:
+        existing = {
+            (r.title.lower(), r.assignee_email.lower())
+            for r in db.query(TaskTemplateRow)
+            .filter(TaskTemplateRow.active == 1, TaskTemplateRow.department == department)
+        }
+        for t in templates:
+            if (t["title"].lower(), t["assignee_email"].lower()) in existing:
+                continue
+            db.add(
+                TaskTemplateRow(
+                    title=t["title"], assignee_email=t["assignee_email"],
+                    department=department, company=(t["company"] or None) if t["company"] != "—" else None,
+                    support_by=(t["support_by"] or None) if t["support_by"] != "—" else None,
+                    frequency=t["frequency"], cutoff_day=t["cutoff_day"],
+                    due_months=t["due_months"], notes=t["notes"],
+                    created_by=admin["email"],
+                )
+            )
+            created += 1
+        db.commit()
+    ensure_task_instances(datetime.now(timezone.utc).replace(tzinfo=None))
+    emit_live_event(
+        admin.get("name") or admin["email"], "tasks_imported",
+        f"imported {created} recurring tasks · {department}",
+        {"module": "Tasks", "department": department},
+    )
+    plan.update({"applied": True, "created": created})
+    return plan
+
+
 @api.get("/leaderboard")
 def leaderboard(admin: dict = Depends(current_admin)):
     """Most active people in the last 12 hours, by number of feed events.
@@ -1818,6 +2452,34 @@ def overview(admin: dict = Depends(current_admin)):
 
         fb_open = db.query(FeedbackRow).filter(FeedbackRow.status == "open").count()
 
+        # My work: open tasks assigned to me + active programs I own.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        ensure_task_instances(now)
+        my_task_rows = (
+            db.query(TaskRow)
+            .filter(
+                func.lower(TaskRow.assignee_email) == me.lower(),
+                TaskRow.status != "completed",
+            )
+            .order_by(TaskRow.cutoff_date.is_(None), TaskRow.cutoff_date.asc())
+            .limit(50)
+            .all()
+        )
+        my_tasks = [_serialize_task(t, now) for t in my_task_rows]
+        my_programs = [
+            {"id": p.id, "name": p.name, "status": p.status,
+             "eta": p.eta.date().isoformat() if p.eta else None}
+            for p in db.query(ProgramRow)
+            .filter(
+                ProgramRow.active == 1,
+                func.lower(ProgramRow.owner_email) == me.lower(),
+                ProgramRow.status != "complete",
+            )
+            .order_by(ProgramRow.eta.asc())
+            .limit(20)
+            .all()
+        ]
+
     return {
         "program_owners": program_owners,
         "awaiting_response": awaiting,
@@ -1825,6 +2487,9 @@ def overview(admin: dict = Depends(current_admin)):
         "messages_waiting": waiting,
         "messages_waiting_total": sum(w["count"] for w in waiting),
         "feedback_open": fb_open,
+        "my_tasks": my_tasks,
+        "my_tasks_overdue": sum(1 for t in my_tasks if t["overdue"]),
+        "my_programs": my_programs,
     }
 
 
