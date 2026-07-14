@@ -1361,6 +1361,13 @@ def org_structure(admin: dict = Depends(current_admin)):
             .filter(UserProfileRow.department.isnot(None))
             .all()
         )
+        prog_counts_raw = dict(
+            db.query(ProgramRow.department, func.count())
+            .filter(ProgramRow.active == 1, ProgramRow.department.isnot(None))
+            .group_by(ProgramRow.department)
+            .all()
+        )
+    prog_counts = {(k or "").strip().lower(): v for k, v in prog_counts_raw.items()}
     member_names = resolve_names({p.email for p in profs})
     counts: Counter = Counter()
     fn_by, own_by, canonical = defaultdict(Counter), defaultdict(Counter), {}
@@ -1389,7 +1396,8 @@ def org_structure(admin: dict = Depends(current_admin)):
         seen.add(key)
         out.append(
             {"id": r.id, "function": r.function, "department": r.department,
-             "leader": r.leader, "owner": r.owner, "members": _count(key, r.owner)}
+             "leader": r.leader, "owner": r.owner, "members": _count(key, r.owner),
+             "programs": prog_counts.get(key, 0)}
         )
     for key, cnt in counts.items():
         if key in seen:
@@ -1399,7 +1407,8 @@ def org_structure(admin: dict = Depends(current_admin)):
             {"id": None,
              "function": fn_by[key].most_common(1)[0][0] if fn_by[key] else None,
              "department": canonical[key], "leader": None,
-             "owner": own, "members": _count(key, own)}
+             "owner": own, "members": _count(key, own),
+             "programs": prog_counts.get(key, 0)}
         )
     out.sort(key=lambda r: r["department"].lower())
     return {

@@ -550,7 +550,7 @@ function Shell({ me, authFetch, logout }) {
         <RedFlags data={redflags} admins={admins} authFetch={authFetch} />
       )}
       {view === "programs" && (
-        <Programs admins={admins} authFetch={authFetch} />
+        <Programs admins={admins} authFetch={authFetch} onOpenDept={openDept} />
       )}
       {view === "feedback" && <Feedback authFetch={authFetch} />}
       {view === "messages" &&
@@ -1387,9 +1387,11 @@ function staleDays(p) {
   return days >= 7 ? days : 0;
 }
 
-function Programs({ admins, authFetch }) {
+function Programs({ admins, authFetch, onOpenDept }) {
   const [items, setItems] = useState([]);
   const [depts, setDepts] = useState([]);
+  const [deptRows, setDeptRows] = useState([]);
+  const [deptFilter, setDeptFilter] = useState("");
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -1422,7 +1424,10 @@ function Programs({ admins, authFetch }) {
   useEffect(() => {
     authFetch("/org/structure")
       .then((r) => r.json())
-      .then((d) => setDepts(d.departments || []))
+      .then((d) => {
+        setDepts(d.departments || []);
+        setDeptRows(d.rows || []);
+      })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1471,7 +1476,9 @@ function Programs({ admins, authFetch }) {
     if (res && res.ok) load(items.length);
   }
 
-  const visible = items.filter((p) => showInactive || p.active);
+  const visible = items
+    .filter((p) => showInactive || p.active)
+    .filter((p) => !deptFilter || p.department === deptFilter);
 
   // Group the loaded window for the chosen view. Items keep their global
   // ETA-urgency order inside each section.
@@ -1497,7 +1504,16 @@ function Programs({ admins, authFetch }) {
       .map(([label, its]) => ({ key: label, label, items: its }));
   }, [visible, groupBy]);
 
+  const railRows = deptRows
+    .slice()
+    .sort(
+      (a, b) =>
+        (b.programs || 0) - (a.programs || 0) ||
+        a.department.localeCompare(b.department)
+    );
+
   return (
+    <div className="prog-layout">
     <main className="hub">
       <div className="hub-head">
         <button onClick={() => setShowNew(!showNew)}>
@@ -1520,6 +1536,17 @@ function Programs({ admins, authFetch }) {
             </button>
           ))}
         </div>
+        <select
+          className={`feed-dept ${deptFilter ? "on" : ""}`}
+          value={deptFilter}
+          onChange={(e) => setDeptFilter(e.target.value)}
+          title="Filter programs by department"
+        >
+          <option value="">🏛 All departments</option>
+          {depts.map((d) => (
+            <option key={d} value={d}>{d}</option>
+          ))}
+        </select>
         <label className="priv-toggle inactive-toggle">
           <input
             type="checkbox"
@@ -1609,6 +1636,22 @@ function Programs({ admins, authFetch }) {
         </button>
       )}
     </main>
+    <aside className="prog-rail">
+      <div className="lb-title">Departments</div>
+      {railRows.map((r) => (
+        <button
+          key={r.department}
+          className="prog-rail-item"
+          onClick={() => (onOpenDept ? onOpenDept(r.department) : setDeptFilter(r.department))}
+          title={`Open the ${r.department} page`}
+        >
+          <span className="prog-rail-name">{r.department}</span>
+          <span className="prog-rail-count">({r.programs || 0})</span>
+        </button>
+      ))}
+      {railRows.length === 0 && <div className="empty">No departments yet.</div>}
+    </aside>
+    </div>
   );
 }
 
@@ -2618,7 +2661,10 @@ function DeptView({ department, me, admins, authFetch, onActor, onMessage, onBac
   const [progs, setProgs] = useState([]);
   const [total, setTotal] = useState(0);
   const [showNew, setShowNew] = useState(false);
+  const [showAllProgs, setShowAllProgs] = useState(false);
   const [form, setForm] = useState({ name: "", objective: "", owner_email: "", eta: "" });
+
+  useEffect(() => setShowAllProgs(false), [department]);
 
   const load = useCallback(() => {
     authFetch(`/org/team?department=${encodeURIComponent(department)}`)
@@ -2767,6 +2813,7 @@ function DeptView({ department, me, admins, authFetch, onActor, onMessage, onBac
       )}
       {progs
         .filter((p) => p.active)
+        .slice(0, showAllProgs ? undefined : 5)
         .map((p) => (
           <ProgramCard
             key={p.id}
@@ -2777,6 +2824,11 @@ function DeptView({ department, me, admins, authFetch, onActor, onMessage, onBac
             authFetch={authFetch}
           />
         ))}
+      {!showAllProgs && progs.filter((p) => p.active).length > 5 && (
+        <button className="load-older" onClick={() => setShowAllProgs(true)}>
+          Show all {progs.filter((p) => p.active).length} programs
+        </button>
+      )}
       {progs.filter((p) => p.active).length === 0 && (
         <div className="empty">No programs for this department yet — add the first goal.</div>
       )}
