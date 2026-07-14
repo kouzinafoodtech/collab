@@ -3172,6 +3172,35 @@ const PORTAL_TABS = [
   ["LIVE", "Live"],
 ];
 
+// Lean roster for the picked department: comma-separated linked names,
+// owner tagged — so everyone knows who belongs where.
+function DeptRoster({ team, onActor }) {
+  const owner = (team.owner || "").trim().toLowerCase();
+  const isOwner = (m) =>
+    owner &&
+    (m.name.toLowerCase() === owner || m.name.toLowerCase().startsWith(owner));
+  const ordered = [...team.members].sort(
+    (a, b) => (isOwner(b) ? 1 : 0) - (isOwner(a) ? 1 : 0)
+  );
+  const ownerListed = ordered.some(isOwner);
+  return (
+    <div className="feed-roster">
+      👥{" "}
+      {!ownerListed && team.owner && <span>owner: {team.owner} · </span>}
+      {ordered.map((m, i) => (
+        <span key={m.email}>
+          <button className="feed-roster-name" onClick={() => onActor(m.name)}>
+            {m.name}
+          </button>
+          {isOwner(m) && <span className="feed-roster-owner"> (owner)</span>}
+          {i < ordered.length - 1 && ", "}
+        </span>
+      ))}
+      {team.members.length === 0 && <span>no members mapped yet</span>}
+    </div>
+  );
+}
+
 function Feed({ authFetch, actor, onActor }) {
   const [top, setTop] = useState([]);
   const [older, setOlder] = useState([]);
@@ -3186,6 +3215,7 @@ function Feed({ authFetch, actor, onActor }) {
   const [portal, setPortal] = useState(null); // null = all sources
   const [dept, setDept] = useState(""); // department filter
   const [depts, setDepts] = useState([]);
+  const [deptTeam, setDeptTeam] = useState(null); // {owner, members} of the picked dept
 
   const actorQS = actor ? `&actor=${encodeURIComponent(actor)}` : "";
   const portalQS = portal ? `&portal=${portal}` : "";
@@ -3215,6 +3245,19 @@ function Feed({ authFetch, actor, onActor }) {
     setDept(d);
     resetPaging();
   }
+
+  // Who's in the picked department (owner tagged) — shown under the feed bar.
+  useEffect(() => {
+    if (!dept) {
+      setDeptTeam(null);
+      return;
+    }
+    authFetch(`/org/team?department=${encodeURIComponent(dept)}`)
+      .then((r) => r.json())
+      .then((d) => setDeptTeam(d && d.members ? d : null))
+      .catch(() => setDeptTeam(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dept]);
 
   const load = useCallback(
     (manual = false) => {
@@ -3350,6 +3393,9 @@ function Feed({ authFetch, actor, onActor }) {
           <span className="refresh-icon">⟳</span> Refresh
         </button>
       </div>
+      {dept && deptTeam && (
+        <DeptRoster team={deptTeam} onActor={onActor} />
+      )}
       {events.map((ev) => {
         const kind =
           (ev.actions || [ev.action]).map(actionKind).find((k) => k === "alert") ||

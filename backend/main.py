@@ -964,6 +964,17 @@ def org_team(
             .filter(UserProfileRow.department == department)
             .all()
         )
+        dept_row = (
+            db.query(OrgDeptRow)
+            .filter(
+                OrgDeptRow.active == 1,
+                func.lower(OrgDeptRow.department) == department.lower(),
+            )
+            .first()
+        )
+    owner = (dept_row.owner if dept_row else None) or next(
+        (p.owner for p in profs if p.owner), None
+    )
     names = resolve_names({p.email for p in profs})
     members = [
         {
@@ -975,7 +986,7 @@ def org_team(
         for p in profs
     ]
     members.sort(key=lambda m: m["name"].lower())
-    return {"department": department, "members": members}
+    return {"department": department, "owner": owner, "members": members}
 
 
 @api.get("/admins")
