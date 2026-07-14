@@ -264,6 +264,31 @@ if IS_MYSQL:
             except Exception:
                 pass  # already added
 
+# Backfill: pre-existing programs inherit their owner's department (idempotent).
+try:
+    with SessionLocal() as _db:
+        _orphans = (
+            _db.query(ProgramRow)
+            .filter(ProgramRow.department.is_(None), ProgramRow.owner_email.isnot(None))
+            .all()
+        )
+        if _orphans:
+            _pmap = {
+                (p.email or "").lower(): p.department
+                for p in _db.query(UserProfileRow).all()
+                if p.department
+            }
+            _dirty = False
+            for _r in _orphans:
+                _d = _pmap.get((_r.owner_email or "").lower())
+                if _d:
+                    _r.department = _d
+                    _dirty = True
+            if _dirty:
+                _db.commit()
+except Exception:
+    pass
+
 
 def _iso_utc(dt) -> str:
     """Serialize a DB datetime as ISO-8601 with an explicit UTC offset. The
@@ -3399,13 +3424,22 @@ def list_programs(
 def create_program(payload: ProgramIn, admin: dict = Depends(current_admin)):
     owner_email, owner_name = _owner_fields(payload.owner_email)
     with SessionLocal() as db:
+        # Department follows the owner unless set explicitly (department page).
+        dept = (payload.department or "").strip() or None
+        if not dept and owner_email:
+            p = (
+                db.query(UserProfileRow)
+                .filter(func.lower(UserProfileRow.email) == owner_email.lower())
+                .first()
+            )
+            dept = p.department if p else None
         row = ProgramRow(
             name=payload.name.strip(),
             objective=(payload.objective or "").strip() or None,
             description=(payload.description or "").strip() or None,
             owner_email=owner_email,
             owner_name=owner_name,
-            department=(payload.department or "").strip() or None,
+            department=dept,
             eta=_parse_eta(payload.eta),
             status="not_started",
             created_by=admin["email"],
@@ -3471,6 +3505,13 @@ def patch_program(program_id: int, payload: ProgramPatch, admin: dict = Depends(
         if payload.owner_email is not None:
             row.owner_email, row.owner_name = _owner_fields(payload.owner_email or None)
             edited = True
+            if payload.department is None:  # department follows the owner
+                p = (
+                    db.query(UserProfileRow)
+                    .filter(func.lower(UserProfileRow.email) == (row.owner_email or "").lower())
+                    .first()
+                ) if row.owner_email else None
+                row.department = p.department if p else None
         if payload.department is not None:
             row.department = payload.department.strip() or None
             edited = True

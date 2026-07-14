@@ -246,6 +246,7 @@ function Shell({ me, authFetch, logout }) {
   const [board, setBoard] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [team, setTeam] = useState([]); // my department's members
+  const [orgRows, setOrgRows] = useState([]); // departments for the mobile menu
   const [redflags, setRedflags] = useState({ total: 0, rules: [] });
   const [overview, setOverview] = useState({
     program_owners: [],
@@ -284,6 +285,14 @@ function Shell({ me, authFetch, logout }) {
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.department]);
+
+  useEffect(() => {
+    authFetch("/org/structure")
+      .then((r) => r.json())
+      .then((d) => setOrgRows(d.rows || []))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     loadBoard();
@@ -457,6 +466,24 @@ function Shell({ me, authFetch, logout }) {
               {label}
             </button>
           ))}
+          <div className="mm-divider" />
+          <div className="mm-label">Departments</div>
+          {orgRows
+            .slice()
+            .sort(
+              (a, b) =>
+                (b.programs || 0) - (a.programs || 0) ||
+                a.department.localeCompare(b.department)
+            )
+            .map((r) => (
+              <button
+                key={r.department}
+                className="mm-item mm-dept"
+                onClick={() => openDept(r.department)}
+              >
+                🏛 {r.department} ({r.programs || 0})
+              </button>
+            ))}
           <div className="mm-divider" />
           {PORTALS.map((p) => (
             <a
@@ -1389,9 +1416,7 @@ function staleDays(p) {
 
 function Programs({ admins, authFetch, onOpenDept }) {
   const [items, setItems] = useState([]);
-  const [depts, setDepts] = useState([]);
   const [deptRows, setDeptRows] = useState([]);
-  const [deptFilter, setDeptFilter] = useState("");
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -1402,7 +1427,6 @@ function Programs({ admins, authFetch, onOpenDept }) {
     objective: "",
     description: "",
     owner_email: "",
-    department: "",
     eta: "",
   });
 
@@ -1424,10 +1448,7 @@ function Programs({ admins, authFetch, onOpenDept }) {
   useEffect(() => {
     authFetch("/org/structure")
       .then((r) => r.json())
-      .then((d) => {
-        setDepts(d.departments || []);
-        setDeptRows(d.rows || []);
-      })
+      .then((d) => setDeptRows(d.rows || []))
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1457,12 +1478,11 @@ function Programs({ admins, authFetch, onOpenDept }) {
         objective: form.objective || null,
         description: form.description || null,
         owner_email: form.owner_email || null,
-        department: form.department || null,
         eta: form.eta || null,
       }),
     }).catch(() => null);
     if (res && res.ok) {
-      setForm({ name: "", objective: "", description: "", owner_email: "", department: "", eta: "" });
+      setForm({ name: "", objective: "", description: "", owner_email: "", eta: "" });
       setShowNew(false);
       load(items.length + 1);
     }
@@ -1476,9 +1496,7 @@ function Programs({ admins, authFetch, onOpenDept }) {
     if (res && res.ok) load(items.length);
   }
 
-  const visible = items
-    .filter((p) => showInactive || p.active)
-    .filter((p) => !deptFilter || p.department === deptFilter);
+  const visible = items.filter((p) => showInactive || p.active);
 
   // Group the loaded window for the chosen view. Items keep their global
   // ETA-urgency order inside each section.
@@ -1536,17 +1554,6 @@ function Programs({ admins, authFetch, onOpenDept }) {
             </button>
           ))}
         </div>
-        <select
-          className={`feed-dept ${deptFilter ? "on" : ""}`}
-          value={deptFilter}
-          onChange={(e) => setDeptFilter(e.target.value)}
-          title="Filter programs by department"
-        >
-          <option value="">🏛 All departments</option>
-          {depts.map((d) => (
-            <option key={d} value={d}>{d}</option>
-          ))}
-        </select>
         <label className="priv-toggle inactive-toggle">
           <input
             type="checkbox"
@@ -1587,15 +1594,6 @@ function Programs({ admins, authFetch, onOpenDept }) {
                 </option>
               ))}
             </select>
-            <select
-              value={form.department}
-              onChange={(e) => setForm({ ...form, department: e.target.value })}
-            >
-              <option value="">Department…</option>
-              {depts.map((d) => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </select>
             <input
               type="date"
               value={form.eta}
@@ -1617,7 +1615,6 @@ function Programs({ admins, authFetch, onOpenDept }) {
               key={p.id}
               p={p}
               admins={admins}
-              depts={depts}
               onPatch={patch}
               onReload={() => load(items.length)}
               authFetch={authFetch}
@@ -1642,7 +1639,7 @@ function Programs({ admins, authFetch, onOpenDept }) {
         <button
           key={r.department}
           className="prog-rail-item"
-          onClick={() => (onOpenDept ? onOpenDept(r.department) : setDeptFilter(r.department))}
+          onClick={() => onOpenDept && onOpenDept(r.department)}
           title={`Open the ${r.department} page`}
         >
           <span className="prog-rail-name">{r.department}</span>
@@ -1655,7 +1652,7 @@ function Programs({ admins, authFetch, onOpenDept }) {
   );
 }
 
-function ProgramCard({ p, admins, depts = [], onPatch, onReload, authFetch }) {
+function ProgramCard({ p, admins, onPatch, onReload, authFetch }) {
   const [editing, setEditing] = useState(false);
   const [showUpdates, setShowUpdates] = useState(false);
   const [expandDesc, setExpandDesc] = useState(false);
@@ -1664,7 +1661,6 @@ function ProgramCard({ p, admins, depts = [], onPatch, onReload, authFetch }) {
     objective: p.objective || "",
     description: p.description || "",
     owner_email: p.owner_email || "",
-    department: p.department || "",
     eta: p.eta || "",
   });
   const eta = etaInfo(p);
@@ -1677,7 +1673,6 @@ function ProgramCard({ p, admins, depts = [], onPatch, onReload, authFetch }) {
       objective: edit.objective,
       description: edit.description,
       owner_email: edit.owner_email,
-      department: edit.department,
       eta: edit.eta || null,
     });
     setEditing(false);
@@ -1791,18 +1786,6 @@ function ProgramCard({ p, admins, depts = [], onPatch, onReload, authFetch }) {
                   {a.name || a.email}
                 </option>
               ))}
-            </select>
-            <select
-              value={edit.department}
-              onChange={(e) => setEdit({ ...edit, department: e.target.value })}
-            >
-              <option value="">Department…</option>
-              {depts.map((d) => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-              {edit.department && !depts.includes(edit.department) && (
-                <option value={edit.department}>{edit.department}</option>
-              )}
             </select>
             <input
               type="date"
@@ -2791,15 +2774,6 @@ function DeptView({ department, me, admins, authFetch, onActor, onMessage, onBac
                 <option key={a.email} value={a.email}>
                   {a.name || a.email}
                 </option>
-              ))}
-            </select>
-            <select
-              value={form.department}
-              onChange={(e) => setForm({ ...form, department: e.target.value })}
-            >
-              <option value="">Department…</option>
-              {depts.map((d) => (
-                <option key={d} value={d}>{d}</option>
               ))}
             </select>
             <input

@@ -3012,10 +3012,10 @@ button.link {
 }
 
 .prog-rail-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 6px;
   width: 100%;
   background: none;
   border: 1px solid transparent;
@@ -3053,4 +3053,17 @@ button.link {
   .prog-rail {
     display: none;
   }
+}
+
+.mm-label {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 14px 2px;
+}
+
+.mm-dept {
+  font-size: 0.88rem;
 }
