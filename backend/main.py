@@ -264,6 +264,55 @@ if IS_MYSQL:
             except Exception:
                 pass  # already added
 
+# Duplicate accounts folded into the real one — applied wherever emails are
+# normalised (import, create, patch), so the duplicate can't come back.
+EMAIL_ALIASES = {
+    "mahesh.m@kftpl.com": "mahesh@kftpl.com",
+}
+
+# Merge duplicate accounts (idempotent): move KLU data from the alias to the
+# real account, then drop the KLU-created duplicate from pkdb.admins.
+if IS_MYSQL:
+    for _src_email, _dst_email in EMAIL_ALIASES.items():
+        try:
+            with SessionLocal() as _db:
+                _sp = _db.query(UserProfileRow).filter(
+                    func.lower(UserProfileRow.email) == _src_email).first()
+                if _sp:
+                    _dp = _db.query(UserProfileRow).filter(
+                        func.lower(UserProfileRow.email) == _dst_email).first()
+                    if _dp:
+                        for _k in ("function", "department", "sub_department", "owner", "notes"):
+                            if not getattr(_dp, _k) and getattr(_sp, _k):
+                                setattr(_dp, _k, getattr(_sp, _k))
+                        _db.delete(_sp)
+                    else:
+                        _sp.email = _dst_email
+                for _row in _db.query(MessageRow).filter(MessageRow.sender == _src_email):
+                    _row.sender = _dst_email
+                for _row in _db.query(MessageRow).filter(MessageRow.recipient == _src_email):
+                    _row.recipient = _dst_email
+                for _row in _db.query(ProgramRow).filter(ProgramRow.owner_email == _src_email):
+                    _row.owner_email = _dst_email
+                _db.commit()
+            with engine.begin() as _conn:
+                # Only remove the duplicate if it's the KLU-created shell
+                # (no KPK modules); otherwise just deactivate it.
+                try:
+                    _conn.execute(
+                        text("DELETE FROM pkdb.admins WHERE email = :e "
+                             "AND (allowed_modules = '[]' OR allowed_modules IS NULL "
+                             "OR allowed_modules = '')"),
+                        {"e": _src_email},
+                    )
+                except Exception:
+                    _conn.execute(
+                        text("UPDATE pkdb.admins SET active = 0 WHERE email = :e"),
+                        {"e": _src_email},
+                    )
+        except Exception:
+            pass  # merge must never block boot
+
 # Backfill: pre-existing programs inherit their owner's department (idempotent).
 try:
     with SessionLocal() as _db:
@@ -1118,7 +1167,8 @@ def _grant_hint(exc: Exception) -> str:
 
 
 def _norm_email(e: str) -> str:
-    return (e or "").strip().lower()
+    e = (e or "").strip().lower()
+    return EMAIL_ALIASES.get(e, e)
 
 
 def _guard_target(email: str, me: str):
