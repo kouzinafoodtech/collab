@@ -3044,7 +3044,6 @@ function EditUserForm({ user, structure, onSave, onCancel }) {
     function: user.function || "",
     department: user.department || "",
     sub_department: user.sub_department || "",
-    owner: user.owner || "",
   });
   return (
     <form
@@ -3058,7 +3057,6 @@ function EditUserForm({ user, structure, onSave, onCancel }) {
           function: f.function,
           department: f.department,
           sub_department: f.sub_department,
-          owner: f.owner,
         });
       }}
     >
@@ -3087,10 +3085,6 @@ function EditUserForm({ user, structure, onSave, onCancel }) {
         <input
           value={f.sub_department} placeholder="Sub-department"
           onChange={(e) => setF({ ...f, sub_department: e.target.value })}
-        />
-        <input
-          value={f.owner} placeholder="Dept owner"
-          onChange={(e) => setF({ ...f, owner: e.target.value })}
         />
         <button type="submit">Save</button>
         <button type="button" className="link" onClick={onCancel}>cancel</button>
