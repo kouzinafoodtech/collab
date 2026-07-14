@@ -241,6 +241,7 @@ function Shell({ me, authFetch, logout }) {
   const [msgFocus, setMsgFocus] = useState(null); // {email, name} open a thread
   const [showPw, setShowPw] = useState(false); // change-my-password modal
   const [deptView, setDeptView] = useState(null); // department page
+  const [deptReturn, setDeptReturn] = useState("live"); // where ← goes back to
   const [peopleOpen, setPeopleOpen] = useState(false); // mobile people drawer
   const [menuOpen, setMenuOpen] = useState(false); // mobile nav menu
   const [board, setBoard] = useState([]);
@@ -311,6 +312,7 @@ function Shell({ me, authFetch, logout }) {
   }
 
   function openDept(d) {
+    if (view !== "dept") setDeptReturn(view); // remember where we came from
     setDeptView(d);
     setView("dept");
     setPeopleOpen(false);
@@ -610,7 +612,7 @@ function Shell({ me, authFetch, logout }) {
           authFetch={authFetch}
           onActor={openActor}
           onMessage={openMessages}
-          onBack={goHome}
+          onBack={() => setView(deptReturn)}
         />
       )}
       {showPw && <ChangePassword authFetch={authFetch} onClose={() => setShowPw(false)} />}
@@ -2702,7 +2704,7 @@ function DeptView({ department, me, admins, authFetch, onActor, onMessage, onBac
     <main className="hub dept-hub">
       <div className="conv-head">
         <button className="link conv-back" onClick={onBack}>
-          ← Live
+          ← Back
         </button>
         <strong className="dept-title">🏛 {department}</strong>
         {meta?.function && <span className="chip chip-people">{meta.function}</span>}
