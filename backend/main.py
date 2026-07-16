@@ -111,6 +111,21 @@ class MessageRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class MessageAckRow(Base):
+    """A per-viewer 'I've dealt with this thread' watermark. A message from
+    `other` counts as awaiting my reply only while its id exceeds both my last
+    reply AND this acked_id — so dismissing a closer like "noted, thanks" clears
+    it, but any newer message from them (id > acked_id) re-surfaces the thread."""
+
+    __tablename__ = "message_acks"
+    __table_args__ = (UniqueConstraint("user_email", "other_email", name="uq_ack_pair"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_email = Column(String(255), nullable=False, index=True)
+    other_email = Column(String(255), nullable=False)
+    acked_id = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class FeedEventRow(Base):
     __tablename__ = "feed_events"
     __table_args__ = (UniqueConstraint("source", "source_id", name="uq_source_row"),)
@@ -2517,6 +2532,13 @@ def overview(admin: dict = Depends(current_admin)):
             .all()
         )
         me_l = _norm_email(me)
+        # Dismiss watermarks: {other -> acked_id} for me.
+        my_acks = {
+            _norm_email(a.other_email): a.acked_id
+            for a in db.query(MessageAckRow).filter(
+                func.lower(MessageAckRow.user_email) == me_l
+            )
+        }
         latest_pair: dict[tuple, int] = {}   # (sender, recipient) -> latest id
         my_incoming: dict[str, list] = {}    # sender -> ids they sent me
         for mid, s, r in rows:
@@ -2536,10 +2558,12 @@ def overview(admin: dict = Depends(current_admin)):
         awaiting = [{"email": r, "count": len(waiters)} for r, waiters in owes.items()]
 
         # Personal: people I owe a reply to, counted by unanswered messages.
+        # A message clears if I replied later (lr) OR I dismissed the thread up
+        # to it (ack) — whichever id is higher.
         waiting = []
         for other, ids in my_incoming.items():
-            lr = latest_pair.get((me_l, other), 0)
-            cnt = sum(1 for i in ids if i > lr)
+            floor = max(latest_pair.get((me_l, other), 0), my_acks.get(other, 0))
+            cnt = sum(1 for i in ids if i > floor)
             if cnt:
                 waiting.append({"email": other, "count": cnt})
 
@@ -2784,6 +2808,16 @@ def messages_conversation(email: str, admin: dict = Depends(current_admin)):
 
     # Latest reply from each party, to work out who still owes whom.
     me_l, other_l = _norm_email(me_email), _norm_email(other)
+    with SessionLocal() as db:
+        ack = (
+            db.query(MessageAckRow)
+            .filter(
+                func.lower(MessageAckRow.user_email) == me_l,
+                func.lower(MessageAckRow.other_email) == other_l,
+            )
+            .first()
+        )
+        acked_id = ack.acked_id if ack else 0
     my_last_to_other = 0
     other_last_to: dict[str, int] = {}
     for m in sorted(msgs, key=lambda x: x["id"]):
@@ -2793,16 +2827,67 @@ def messages_conversation(email: str, admin: dict = Depends(current_admin)):
         if s == other_l:
             other_last_to[r] = m["id"]
 
+    # I owe them only above whichever is higher: my last reply, or my dismissal.
+    owe_floor = max(my_last_to_other, acked_id)
     owe_me = owe_them = 0
+    latest_owed = 0
     for m in msgs:
         s, r = _norm_email(m["sender"]), _norm_email(m["recipient"])
-        # they messaged me and I haven't replied since → I owe them
-        m["owe_me"] = s == other_l and r == me_l and m["id"] > my_last_to_other
+        # they messaged me and I haven't replied since (or dismissed) → I owe them
+        m["owe_me"] = s == other_l and r == me_l and m["id"] > owe_floor
         # someone messaged them and they haven't replied since → they owe others
         m["owe_them"] = r == other_l and m["id"] > other_last_to.get(s, 0)
         owe_me += 1 if m["owe_me"] else 0
         owe_them += 1 if m["owe_them"] else 0
-    return {"messages": msgs, "owe_me": owe_me, "owe_them": owe_them}
+        if m["owe_me"]:
+            latest_owed = max(latest_owed, m["id"])
+    return {
+        "messages": msgs,
+        "owe_me": owe_me,
+        "owe_them": owe_them,
+        # id the UI passes back to "mark done" — the newest message I owe on.
+        "owe_latest_id": latest_owed,
+    }
+
+
+class AckIn(BaseModel):
+    email: str
+    up_to_id: Optional[int] = None  # dismiss up to this message id (default: latest)
+
+
+@api.post("/messages/ack")
+def ack_conversation(payload: AckIn, admin: dict = Depends(current_admin)):
+    """Mark a thread handled — clears it from 'waiting on your reply' without
+    sending a message. Reappears automatically if they message again."""
+    me_l, other_l = _norm_email(admin["email"]), _norm_email(payload.email or "")
+    if not other_l:
+        raise HTTPException(status_code=400, detail="Missing person")
+    with SessionLocal() as db:
+        up_to = payload.up_to_id
+        if not up_to:  # default: their newest message to me
+            newest = (
+                db.query(func.max(MessageRow.id))
+                .filter(
+                    func.lower(MessageRow.sender) == other_l,
+                    func.lower(MessageRow.recipient) == me_l,
+                )
+                .scalar()
+            )
+            up_to = newest or 0
+        row = (
+            db.query(MessageAckRow)
+            .filter(
+                func.lower(MessageAckRow.user_email) == me_l,
+                func.lower(MessageAckRow.other_email) == other_l,
+            )
+            .first()
+        )
+        if row:
+            row.acked_id = max(row.acked_id, up_to)
+        else:
+            db.add(MessageAckRow(user_email=me_l, other_email=other_l, acked_id=up_to))
+        db.commit()
+    return {"ok": True, "acked_id": up_to}
 
 
 @api.post("/messages/{message_id}/like")

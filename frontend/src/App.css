@@ -3436,3 +3436,26 @@ button.link {
   background: #f4f4ff;
   filter: none;
 }
+
+/* ---- Conversation: mark-handled ---- */
+.conv-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.conv-handled-btn {
+  margin-left: auto;
+  background: #16a34a;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.conv-handled-btn:hover {
+  filter: brightness(1.08);
+}

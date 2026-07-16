@@ -2254,6 +2254,16 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
     load();
   }
 
+  // Dismiss the thread from "waiting on your reply" without sending anything —
+  // for closers like "noted, thanks". Reappears if they message again.
+  async function markHandled() {
+    await authFetch("/messages/ack", {
+      method: "POST",
+      body: JSON.stringify({ email: person.email, up_to_id: data.owe_latest_id || null }),
+    }).catch(() => {});
+    load();
+  }
+
   // Reply in-thread: goes to the message's OTHER party (its sender when they
   // wrote it — vital on your own page, where person.email is yourself).
   async function sendReply(m) {
@@ -2397,7 +2407,16 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
 
       {oweMe.length > 0 && (
         <div className="conv-section conv-waiting">
-          <div className="conv-section-title">⏳ Waiting on your reply</div>
+          <div className="conv-section-title">
+            ⏳ Waiting on your reply
+            <button
+              className="conv-handled-btn"
+              onClick={markHandled}
+              title="Clear this from your pending list without replying — it comes back if they message again"
+            >
+              ✓ Mark handled
+            </button>
+          </div>
           {oweMe.map((m) => line(m, "me"))}
         </div>
       )}
