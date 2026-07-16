@@ -6,7 +6,7 @@ name: Deploy to Azure Container Apps
 on:
   push:
     branches:
-      - claude/upbeat-goldberg-1iwz26
+      - main
   workflow_dispatch: # lets you trigger a deploy by hand from the Actions tab
 
 permissions:
