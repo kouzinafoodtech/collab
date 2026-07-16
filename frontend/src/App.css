@@ -3474,3 +3474,20 @@ button.link {
 .mention-tags .link {
   font-size: 0.76rem;
 }
+
+/* ---- Flag: mark done ---- */
+.rf-done-link {
+  background: none;
+  border: none;
+  color: #16a34a;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 4px;
+}
+
+.rf-done-link:hover {
+  text-decoration: underline;
+  filter: none;
+}

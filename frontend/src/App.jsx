@@ -933,11 +933,21 @@ function RedFlags({ data, admins, authFetch }) {
   const [openItems, setOpenItems] = useState({}); // "rulekey-ref" -> bool (drill-down)
   const [templates, setTemplates] = useState({});
   const [composing, setComposing] = useState(null); // rule being emailed
+  const [doneIds, setDoneIds] = useState(new Set()); // launch items marked done this session
 
   const toggleKitchen = (id) =>
     setOpenKitchens((cur) => ({ ...cur, [id]: !cur[id] }));
   const toggleItems = (id) =>
     setOpenItems((cur) => ({ ...cur, [id]: !cur[id] }));
+
+  async function markLaunchDone(ruleKey, f) {
+    const fid = `${ruleKey}-${f.ref}`;
+    setDoneIds((cur) => new Set(cur).add(fid)); // optimistic — hide immediately
+    await authFetch("/redflags/launch/done", {
+      method: "POST",
+      body: JSON.stringify({ rule_key: ruleKey, ref: f.ref, ident: f.ident, done: true }),
+    }).catch(() => {});
+  }
 
   useEffect(() => {
     authFetch("/redflags/templates")
@@ -964,6 +974,7 @@ function RedFlags({ data, admins, authFetch }) {
         const isOpen = open === rule.key;
         const renderItem = (f, showEntity) => {
           const fid = `${rule.key}-${f.ref}`;
+          if (doneIds.has(fid)) return null; // marked done this session — hidden
           const ids = [];
           if (f.order_id) ids.push(`#${f.order_id}`);
           if (f.po_number) ids.push(`PO ${f.po_number}`);
@@ -1015,6 +1026,15 @@ function RedFlags({ data, admins, authFetch }) {
                 >
                   🚩 flag to…
                 </button>
+                {f.can_mark_done && (
+                  <button
+                    className="rf-done-link"
+                    onClick={() => markLaunchDone(rule.key, f)}
+                    title="Mark this launch as done — it stops showing here"
+                  >
+                    ✓ mark done
+                  </button>
+                )}
               </div>
               {itemsOpen && f.items?.length > 0 && (
                 <div className="rf-items">
@@ -2537,6 +2557,46 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
   const [mineOnly, setMineOnly] = useState(false);
   const [openThreads, setOpenThreads] = useState({}); // rootId -> bool
   const [shown, setShown] = useState(MSG_PAGE);
+  const [mentions, setMentions] = useState([]); // extra people tagged
+
+  // @mention autocomplete on the @token at the end of a text box.
+  const suggFor = (text) => {
+    const t = (text || "").match(/@([\w.]*)$/);
+    if (!t) return [];
+    return admins
+      .filter(
+        (a) =>
+          (a.email || "").toLowerCase() !== (me.email || "").toLowerCase() &&
+          (a.name || a.email).toLowerCase().includes(t[1].toLowerCase())
+      )
+      .slice(0, 5);
+  };
+  const pickMention = (a, text, setText) => {
+    const first = (a.name || a.email).split(" ")[0];
+    setText(text.replace(/@([\w.]*)$/, `@${first} `));
+    setMentions((cur) => [...new Set([...cur, a.email])]);
+  };
+  const MentionRow = ({ text, setText }) => {
+    const s = suggFor(text);
+    if (!s.length) return null;
+    return (
+      <div className="mention-sugg">
+        {s.map((a) => (
+          <button
+            key={a.email}
+            type="button"
+            className="mention-item"
+            onClick={() => pickMention(a, text, setText)}
+          >
+            <span className="avatar sm" style={{ background: actorColor(a.name || a.email) }}>
+              {initials(a.name || a.email)}
+            </span>
+            {a.name || a.email}
+          </button>
+        ))}
+      </div>
+    );
+  };
 
   // Reset paging whenever the visible set changes.
   useEffect(() => setShown(MSG_PAGE), [sub, query, mineOnly]);
@@ -2565,6 +2625,7 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
         recipient,
         body: body.trim(),
         private: sub === "private" ? true : priv,
+        mentions,
       }),
     }).catch(() => null);
     if (!res || !res.ok) {
@@ -2573,6 +2634,7 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
       return;
     }
     setBody("");
+    setMentions([]);
     load();
   }
 
@@ -2580,11 +2642,12 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
     if (!replyBody.trim()) return;
     const res = await authFetch("/messages/send", {
       method: "POST",
-      body: JSON.stringify({ parent_id: rootId, body: replyBody.trim() }),
+      body: JSON.stringify({ parent_id: rootId, body: replyBody.trim(), mentions }),
     }).catch(() => null);
     if (res && res.ok) {
       setReplyBody("");
       setReplyTo(null);
+      setMentions([]);
       load();
     }
   }
@@ -2698,7 +2761,9 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
         <input
           className="grow"
           placeholder={
-            sub === "private" ? "Private message…" : "Message… (visible to all admins)"
+            sub === "private"
+              ? "Private message… (@name to loop in others)"
+              : "Message… (visible to all admins)"
           }
           value={body}
           onChange={(e) => setBody(e.target.value)}
@@ -2715,6 +2780,19 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
         )}
         <button type="submit">Send</button>
       </form>
+      <MentionRow text={body} setText={setBody} />
+      {mentions.length > 0 && (
+        <div className="mention-tags">
+          Also emailing:{" "}
+          {mentions
+            .map((em) => {
+              const a = admins.find((x) => x.email === em);
+              return a ? a.name || a.email : em;
+            })
+            .join(", ")}
+          <button className="link" onClick={() => setMentions([])}>clear</button>
+        </div>
+      )}
       {error && <p className="error">{error}</p>}
 
       <div className="thread-list">
@@ -2776,22 +2854,37 @@ function MessagesHub({ me, admins, authFetch, onActor, onOpenPerson }) {
                 ))}
 
               {replyTo === m.id ? (
-                <form
-                  className="reply-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    sendReply(m.id);
-                  }}
-                >
-                  <input
-                    className="grow"
-                    autoFocus
-                    placeholder="Reply…"
-                    value={replyBody}
-                    onChange={(e) => setReplyBody(e.target.value)}
-                  />
-                  <button type="submit">Reply</button>
-                </form>
+                <>
+                  <form
+                    className="reply-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      sendReply(m.id);
+                    }}
+                  >
+                    <input
+                      className="grow"
+                      autoFocus
+                      placeholder="Reply… (@name to tag others)"
+                      value={replyBody}
+                      onChange={(e) => setReplyBody(e.target.value)}
+                    />
+                    <button type="submit">Reply</button>
+                  </form>
+                  <MentionRow text={replyBody} setText={setReplyBody} />
+                  {mentions.length > 0 && (
+                    <div className="mention-tags">
+                      Also emailing:{" "}
+                      {mentions
+                        .map((em) => {
+                          const a = admins.find((x) => x.email === em);
+                          return a ? a.name || a.email : em;
+                        })
+                        .join(", ")}
+                      <button className="link" onClick={() => setMentions([])}>clear</button>
+                    </div>
+                  )}
+                </>
               ) : (
                 <button className="link reply-link" onClick={() => setReplyTo(m.id)}>
                   ↳ reply

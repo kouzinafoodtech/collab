@@ -126,6 +126,21 @@ class MessageAckRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class LaunchDoneRow(Base):
+    """Manual 'this launch flag is handled' override. KLM lags reality, so a
+    launch manager can mark a launch done here and it drops off the flag
+    immediately (keyed by rule + launch ref). Kept for audit (who/when)."""
+
+    __tablename__ = "launch_done"
+    __table_args__ = (UniqueConstraint("rule_key", "ref", name="uq_launch_done"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_key = Column(String(32), nullable=False)
+    ref = Column(Integer, nullable=False)
+    ident = Column(String(255), nullable=True)   # kitchen name at time of marking
+    marked_by = Column(String(255), nullable=True)
+    marked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class FeedEventRow(Base):
     __tablename__ = "feed_events"
     __table_args__ = (UniqueConstraint("source", "source_id", name="uq_source_row"),)
@@ -3678,6 +3693,20 @@ LAUNCH_OB_REMIND_DAYS = 10    # team reminds from day 10
 LAUNCH_OB_DEADLINE_DAYS = 15  # onboarding deadline: 15 days from Aggregator OB
 
 
+def _launch_dismissed_refs(rule_key: str) -> set:
+    """Refs a launch manager has manually marked done for this rule."""
+    try:
+        with SessionLocal() as db:
+            return {
+                r.ref
+                for r in db.query(LaunchDoneRow.ref).filter(
+                    LaunchDoneRow.rule_key == rule_key
+                )
+            }
+    except Exception:
+        return set()
+
+
 def _compute_launch_ob(conn, now: datetime) -> list[dict]:
     """Kitchen-launch onboarding SLA (KLM). Once 'Aggregator Onboarding' is
     completed, onboarding has a 15-day deadline (reminders from day 10). Flags
@@ -3709,8 +3738,11 @@ def _compute_launch_ob(conn, now: datetime) -> list[dict]:
         ).mappings().all()
     except Exception:
         return []
+    dismissed = _launch_dismissed_refs("launch_ob")
     out = []
     for r in rows:
+        if r["ref"] in dismissed:
+            continue  # manually marked done
         ds = int(r["days_since"] or 0)
         out.append(
             {
@@ -3726,6 +3758,7 @@ def _compute_launch_ob(conn, now: datetime) -> list[dict]:
                 "red": ds >= LAUNCH_OB_DEADLINE_DAYS,
                 "state": r["cur_status"] or "onboarding",
                 "ref": r["ref"],
+                "can_mark_done": True,
             }
         )
     return out
@@ -3766,8 +3799,11 @@ def _compute_launch_rm(conn, now: datetime) -> list[dict]:
         rows = conn.execute(text(sql), {"confirm": LAUNCH_RM_CONFIRM_HRS}).mappings().all()
     except Exception:
         return []
+    dismissed = _launch_dismissed_refs("launch_rm")
     out = []
     for r in rows:
+        if r["ref"] in dismissed:
+            continue  # manually marked done
         hrs = int(r["hrs"] or 0)
         confirmed = r["scheduled"] is not None
         red = hrs >= LAUNCH_RM_CALL_HRS
@@ -3786,6 +3822,7 @@ def _compute_launch_rm(conn, now: datetime) -> list[dict]:
                 "red": red,
                 "state": state,
                 "ref": r["ref"],
+                "can_mark_done": True,
             }
         )
     return out
@@ -3927,6 +3964,7 @@ def _flag_json(f: dict) -> dict:
         "amount": f.get("amount"),
         "bill_url": f.get("bill_url"),
         "items": f.get("items"),
+        "can_mark_done": f.get("can_mark_done", False),
     }
 
 
@@ -4056,12 +4094,14 @@ def redflags(admin: dict = Depends(current_admin)):
              "items": [{"name": "GAS CYLINDER (19 KGS)", "ordered": 2, "received": 2, "amount": 1800}]},
         ]
         launch_demo = [
-            {"entity": "Satyam", "contact_email": "", "ident": "RF-UP-LKO-ALIGANJ0-1",
-             "eta": (now - timedelta(days=5)).date(), "days_overdue": 5, "red": True,
-             "state": "WIP", "ref": 415},
-            {"entity": "Satyam", "contact_email": "", "ident": "RX-KA-BNG-RICHESGA-1",
-             "eta": (now + timedelta(days=2)).date(), "days_overdue": 0, "red": False,
-             "state": "onboarding", "ref": 421},
+            f for f in [
+                {"entity": "Satyam", "contact_email": "", "ident": "RF-UP-LKO-ALIGANJ0-1",
+                 "eta": (now - timedelta(days=5)).date(), "days_overdue": 5, "red": True,
+                 "state": "WIP", "ref": 415, "can_mark_done": True},
+                {"entity": "Satyam", "contact_email": "", "ident": "RX-KA-BNG-RICHESGA-1",
+                 "eta": (now + timedelta(days=2)).date(), "days_overdue": 0, "red": False,
+                 "state": "onboarding", "ref": 421, "can_mark_done": True},
+            ] if f["ref"] not in _launch_dismissed_refs("launch_ob")
         ]
         rules_out = [
             _rule_out(REDFLAG_RULES[0], coco_demo),
@@ -4079,6 +4119,47 @@ def redflags(admin: dict = Depends(current_admin)):
     _redflag_cache["at"] = now
     _redflag_cache["data"] = data
     return data
+
+
+class LaunchDoneIn(BaseModel):
+    rule_key: str
+    ref: int
+    ident: Optional[str] = None
+    done: bool = True  # False = un-mark (bring it back)
+
+
+@api.post("/redflags/launch/done")
+def mark_launch_done(payload: LaunchDoneIn, admin: dict = Depends(current_admin)):
+    """Mark a kitchen-launch flag as handled (or un-mark). Launch-only rules —
+    it drops off the flag immediately and is logged to the live feed."""
+    if payload.rule_key not in ("launch_ob", "launch_rm"):
+        raise HTTPException(status_code=400, detail="Only launch flags can be marked done")
+    who = admin.get("name") or admin["email"]
+    with SessionLocal() as db:
+        existing = (
+            db.query(LaunchDoneRow)
+            .filter(LaunchDoneRow.rule_key == payload.rule_key, LaunchDoneRow.ref == payload.ref)
+            .first()
+        )
+        if payload.done and not existing:
+            db.add(
+                LaunchDoneRow(
+                    rule_key=payload.rule_key, ref=payload.ref,
+                    ident=(payload.ident or None), marked_by=admin["email"],
+                )
+            )
+            db.commit()
+        elif not payload.done and existing:
+            db.delete(existing)
+            db.commit()
+    _redflag_cache["at"] = None  # force recompute so it disappears now
+    if payload.done:
+        emit_live_event(
+            who, "launch_marked_done",
+            f"marked launch done · {payload.ident or ('#' + str(payload.ref))}",
+            {"module": "Flags", "rule": payload.rule_key},
+        )
+    return {"ok": True, "done": payload.done}
 
 
 @api.get("/redflags/templates")
