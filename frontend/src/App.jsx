@@ -612,6 +612,7 @@ function Shell({ me, authFetch, logout }) {
           <ConversationView
             me={me}
             person={msgFocus}
+            admins={admins}
             authFetch={authFetch}
             onBack={() => setMsgFocus(null)}
             onActor={openActor}
@@ -2211,13 +2212,54 @@ const MSG_PAGE = 15;
 
 // A real 1:1 conversation (inbox thread): their unanswered messages up top,
 // then the public thread, then the private thread — with a reply box.
-function ConversationView({ me, person, authFetch, onBack, onActor }) {
+function ConversationView({ me, person, admins = [], authFetch, onBack, onActor }) {
   const [data, setData] = useState({ messages: [], owe_me: 0, owe_them: 0 });
   const [body, setBody] = useState("");
   const [priv, setPriv] = useState(false);
   const [error, setError] = useState("");
   const [replyId, setReplyId] = useState(null); // message being replied to inline
   const [replyText, setReplyText] = useState("");
+  const [mentions, setMentions] = useState([]); // extra people tagged (emails)
+
+  // @mention autocomplete: match the @token at the caret-end of a given text.
+  const suggFor = (text) => {
+    const t = (text || "").match(/@([\w.]*)$/);
+    if (!t) return [];
+    return admins
+      .filter(
+        (a) =>
+          (a.email || "").toLowerCase() !== (person.email || "").toLowerCase() &&
+          (a.email || "").toLowerCase() !== (me.email || "").toLowerCase() &&
+          (a.name || a.email).toLowerCase().includes(t[1].toLowerCase())
+      )
+      .slice(0, 5);
+  };
+  const pickMention = (a, text, setText) => {
+    const first = (a.name || a.email).split(" ")[0];
+    setText(text.replace(/@([\w.]*)$/, `@${first} `));
+    setMentions((cur) => [...new Set([...cur, a.email])]);
+  };
+  const MentionRow = ({ text, setText }) => {
+    const s = suggFor(text);
+    if (!s.length) return null;
+    return (
+      <div className="mention-sugg">
+        {s.map((a) => (
+          <button
+            key={a.email}
+            type="button"
+            className="mention-item"
+            onClick={() => pickMention(a, text, setText)}
+          >
+            <span className="avatar sm" style={{ background: actorColor(a.name || a.email) }}>
+              {initials(a.name || a.email)}
+            </span>
+            {a.name || a.email}
+          </button>
+        ))}
+      </div>
+    );
+  };
 
   const load = useCallback(() => {
     authFetch(`/messages/conversation?email=${encodeURIComponent(person.email)}`)
@@ -2239,13 +2281,19 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
     if (!body.trim()) return;
     const res = await authFetch("/messages/send", {
       method: "POST",
-      body: JSON.stringify({ recipient: person.email, body: body.trim(), private: priv }),
+      body: JSON.stringify({
+        recipient: person.email,
+        body: body.trim(),
+        private: priv,
+        mentions,
+      }),
     }).catch(() => null);
     if (!res || !res.ok) {
       setError("Failed to send");
       return;
     }
     setBody("");
+    setMentions([]);
     load();
   }
 
@@ -2278,11 +2326,14 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
         recipient: to,
         body: replyText.trim(),
         private: !!m.is_private,
+        parent_id: m.id,
+        mentions,
       }),
     }).catch(() => null);
     if (res && res.ok) {
       setReplyText("");
       setReplyId(null);
+      setMentions([]);
       load();
     } else {
       const d = res ? await res.json().catch(() => ({})) : {};
@@ -2318,36 +2369,52 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
       </div>
       <div className="conv-body">{m.body}</div>
       {replyId === m.id ? (
-        <form
-          className="conv-reply-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            sendReply(m);
-          }}
-        >
-          <input
-            className="grow"
-            autoFocus
-            placeholder={`Reply to ${
-              (m.sender || "").toLowerCase() === (me.email || "").toLowerCase()
-                ? m.recipient_name
-                : m.sender_name
-            }…${m.is_private ? " 🔒" : ""}`}
-            value={replyText}
-            onChange={(e) => setReplyText(e.target.value)}
-          />
-          <button type="submit">Reply</button>
-          <button
-            type="button"
-            className="link"
-            onClick={() => {
-              setReplyId(null);
-              setReplyText("");
+        <>
+          <form
+            className="conv-reply-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              sendReply(m);
             }}
           >
-            cancel
-          </button>
-        </form>
+            <input
+              className="grow"
+              autoFocus
+              placeholder={`Reply to ${
+                (m.sender || "").toLowerCase() === (me.email || "").toLowerCase()
+                  ? m.recipient_name
+                  : m.sender_name
+              }… (@name to tag others)${m.is_private ? " 🔒" : ""}`}
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+            />
+            <button type="submit">Reply</button>
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                setReplyId(null);
+                setReplyText("");
+                setMentions([]);
+              }}
+            >
+              cancel
+            </button>
+          </form>
+          <MentionRow text={replyText} setText={setReplyText} />
+          {mentions.length > 0 && (
+            <div className="mention-tags">
+              Also emailing:{" "}
+              {mentions
+                .map((em) => {
+                  const a = admins.find((x) => x.email === em);
+                  return a ? a.name || a.email : em;
+                })
+                .join(", ")}
+              <button className="link" onClick={() => setMentions([])}>clear</button>
+            </div>
+          )}
+        </>
       ) : (
         <button
           className="link conv-reply-link"
@@ -2383,20 +2450,35 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
       </div>
 
       {(person.email || "").toLowerCase() !== (me.email || "").toLowerCase() && (
-        <form className="card composer-card" onSubmit={send}>
-          <input
-            className="grow"
-            autoFocus
-            placeholder={`Message ${person.name}…`}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-          />
-          <label className="priv-toggle" title="Send privately">
-            <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} />
-            🔒
-          </label>
-          <button type="submit">Send</button>
-        </form>
+        <>
+          <form className="card composer-card" onSubmit={send}>
+            <input
+              className="grow"
+              autoFocus
+              placeholder={`Message ${person.name}… (@name to also loop in others)`}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+            />
+            <label className="priv-toggle" title="Send privately">
+              <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} />
+              🔒
+            </label>
+            <button type="submit">Send</button>
+          </form>
+          <MentionRow text={body} setText={setBody} />
+          {mentions.length > 0 && (
+            <div className="mention-tags">
+              Also emailing:{" "}
+              {mentions
+                .map((em) => {
+                  const a = admins.find((x) => x.email === em);
+                  return a ? a.name || a.email : em;
+                })
+                .join(", ")}
+              <button className="link" onClick={() => setMentions([])}>clear</button>
+            </div>
+          )}
+        </>
       )}
       {error && <p className="error">{error}</p>}
 

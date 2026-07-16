@@ -3459,3 +3459,18 @@ button.link {
 .conv-handled-btn:hover {
   filter: brightness(1.08);
 }
+
+/* ---- Message @mention tags ---- */
+.mention-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding: 4px 2px 0;
+}
+
+.mention-tags .link {
+  font-size: 0.76rem;
+}

@@ -2916,19 +2916,27 @@ class SendIn(BaseModel):
     body: str = Field(..., min_length=1, max_length=2000)
     private: bool = False
     parent_id: Optional[int] = None
+    mentions: list[str] = []  # extra people to loop in (email + in-app notice)
 
 
 @api.post("/messages/send", status_code=201)
-def messages_send(payload: SendIn, admin: dict = Depends(current_admin)):
+def messages_send(
+    payload: SendIn,
+    background_tasks: BackgroundTasks,
+    admin: dict = Depends(current_admin),
+):
     text_body = payload.body.strip()
     if not text_body:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    me_l = _norm_email(admin["email"])
+    parent_ctx = None  # the message being replied to, for tagged people's context
+    is_private = 0
+    recipient = None
     with SessionLocal() as db:
         if payload.parent_id:
             root = db.get(MessageRow, payload.parent_id)
             if not root:
                 raise HTTPException(status_code=404, detail="Thread not found")
-            me_l = _norm_email(admin["email"])
             if root.is_private and me_l not in (
                 _norm_email(root.sender), _norm_email(root.recipient)
             ):
@@ -2941,6 +2949,9 @@ def messages_send(payload: SendIn, admin: dict = Depends(current_admin)):
                 if _norm_email(root.sender) != me_l
                 else root.recipient
             )
+            recipient = other
+            is_private = root.is_private
+            parent_ctx = {"sender": root.sender, "body": root.body}
             row = MessageRow(
                 sender=admin["email"],
                 recipient=other,
@@ -2958,15 +2969,47 @@ def messages_send(payload: SendIn, admin: dict = Depends(current_admin)):
                 raise HTTPException(
                     status_code=400, detail="Recipient must be an active admin"
                 )
+            is_private = 1 if payload.private else 0
             row = MessageRow(
                 sender=admin["email"],
                 recipient=recipient,
                 body=text_body,
-                is_private=1 if payload.private else 0,
+                is_private=is_private,
             )
         db.add(row)
         db.commit()
-    return {"ok": True}
+
+    # @mentions: loop extra people in (explicit picks + @tokens in the text),
+    # excluding me and the direct recipient (they already have it). Each gets an
+    # in-app notice carrying this message AND the one being replied to, + email.
+    cand = {_norm_email(e) for e in payload.mentions if e}
+    for tok in re.findall(r"@([A-Za-z][\w.]*)", text_body):
+        hits = [a for a in list_active_admins() if _owner_matches(tok, a.get("name") or "")]
+        if len(hits) == 1:
+            cand.add(_norm_email(hits[0]["email"]))
+    cand.discard(me_l)
+    cand.discard(_norm_email(recipient or ""))
+    mentioned = [e for e in sorted(cand) if is_active_admin(e)]
+    if mentioned:
+        who = admin.get("name") or admin["email"]
+        ctx = ""
+        if parent_ctx:
+            pn = resolve_names({parent_ctx["sender"]}).get(parent_ctx["sender"]) or (
+                parent_ctx["sender"].split("@")[0]
+            )
+            ctx = f"\n\n↩ In reply to {pn}: “{parent_ctx['body'][:400]}”"
+        note = f"💬 {who} tagged you in a message: “{text_body[:400]}”{ctx}"
+        with SessionLocal() as db:
+            for e in mentioned:
+                db.add(MessageRow(sender=admin["email"], recipient=e, body=note, is_private=1))
+            db.commit()
+        if email_enabled():
+            background_tasks.add_task(
+                send_email, mentioned,
+                f"[Kouzina Live] {who} tagged you in a message",
+                f"{note}\n\nOpen: https://live.kftpl.com",
+            )
+    return {"ok": True, "mentioned": mentioned}
 
 
 # ---- Superadmin dashboard -----------------------------------------------------
