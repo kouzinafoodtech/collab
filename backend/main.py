@@ -95,7 +95,20 @@ if IS_MYSQL:
 elif _backend.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
+# Pool sizing matters: several endpoints hold two connections at once (a
+# request session plus a nested helper session), and every browser polls
+# /overview, /feed and messages. The SQLAlchemy default (5 + 10 overflow) was
+# starving under real load — bump it well within the DB's headroom. pool_recycle
+# drops connections the shared server may have closed; pool_timeout fails fast
+# instead of hanging a request forever when the pool is momentarily full.
+_pool_kwargs = (
+    dict(pool_size=20, max_overflow=40, pool_recycle=1800, pool_timeout=20)
+    if IS_MYSQL
+    else {}
+)
+engine = create_engine(
+    DATABASE_URL, pool_pre_ping=True, connect_args=connect_args, **_pool_kwargs
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 Base = declarative_base()
 
@@ -1938,9 +1951,18 @@ def _month_due(freq: str, due_months: Optional[str], month: int) -> bool:
     return month in months if months else False
 
 
-def ensure_task_instances(now: datetime):
-    """Materialise this month's instances from active templates (idempotent)."""
+_ensured_period = None  # process cache: last period we materialised instances for
+
+
+def ensure_task_instances(now: datetime, force: bool = False):
+    """Materialise this month's instances from active templates (idempotent).
+    Cached per process: after the month's instances exist this is a no-op with
+    NO database work, so the hot /overview + /tasks polls don't re-run it every
+    time. Template-creation paths pass force=True to pick up the new template."""
+    global _ensured_period
     period = _current_period(now)
+    if not force and _ensured_period == period:
+        return
     import calendar
     last_day = calendar.monthrange(now.year, now.month)[1]
     with SessionLocal() as db:
@@ -1970,6 +1992,7 @@ def ensure_task_instances(now: datetime):
                 db.commit()
             except Exception:
                 db.rollback()  # racing replica inserted the same period first
+    _ensured_period = period  # mark this month done — subsequent polls skip DB
 
 
 def _serialize_task(t, now: datetime) -> dict:
@@ -2306,7 +2329,7 @@ def add_task_template(payload: TemplateTaskIn, admin: dict = Depends(current_adm
         with SessionLocal() as db:
             db.add(MessageRow(sender=admin["email"], recipient=assignee, body=note, is_private=1))
             db.commit()
-    ensure_task_instances(datetime.now(timezone.utc).replace(tzinfo=None))
+    ensure_task_instances(datetime.now(timezone.utc).replace(tzinfo=None), force=True)
     return {"ok": True, "id": rid}
 
 
@@ -2475,7 +2498,7 @@ async def import_task_tracker(
             )
             created += 1
         db.commit()
-    ensure_task_instances(datetime.now(timezone.utc).replace(tzinfo=None))
+    ensure_task_instances(datetime.now(timezone.utc).replace(tzinfo=None), force=True)
     emit_live_event(
         admin.get("name") or admin["email"], "tasks_imported",
         f"imported {created} recurring tasks · {department}",
