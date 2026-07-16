@@ -2328,7 +2328,11 @@ function ConversationView({ me, person, authFetch, onBack, onActor }) {
           <input
             className="grow"
             autoFocus
-            placeholder={`Reply to ${person.name}…${m.is_private ? " 🔒" : ""}`}
+            placeholder={`Reply to ${
+              (m.sender || "").toLowerCase() === (me.email || "").toLowerCase()
+                ? m.recipient_name
+                : m.sender_name
+            }…${m.is_private ? " 🔒" : ""}`}
             value={replyText}
             onChange={(e) => setReplyText(e.target.value)}
           />
