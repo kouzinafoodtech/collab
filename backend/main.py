@@ -838,6 +838,40 @@ SOURCES = [
         "init": _init_sql("financedb.bill_activity_log", time_col="performed_at"),
     },
     {
+        # P&L snapshots are the live finance stream (the old admin_audit_log
+        # that fed this stopped after a handful of rows on 7 Jul). Read the real
+        # pnldb.pnl_snapshots table; resolve the creator's email to a name.
+        "name": "pnldb.pnl_snapshots",
+        "portal": "FIN",
+        "sql": (
+            "SELECT s.id, COALESCE(adm.name, s.created_by, 'Finance') AS actor, "
+            "'pnl_snapshot_created' AS action, 'snapshot' AS entity_type, s.id AS entity_id, "
+            "JSON_OBJECT('module', 'P&L', 'name', s.month) AS details, s.created_at "
+            "FROM pnldb.pnl_snapshots s "
+            "LEFT JOIN pkdb.admins adm ON adm.email COLLATE utf8mb4_general_ci "
+            "  = s.created_by COLLATE utf8mb4_general_ci "
+            "WHERE s.id > :wm ORDER BY s.id LIMIT :lim"
+        ),
+        "init": _init_sql("pnldb.pnl_snapshots"),
+    },
+    {
+        # Cashfree payouts — the live version of the old 'load_request_paid'.
+        "name": "financedb.cf_transfers",
+        "portal": "FIN",
+        "sql": (
+            "SELECT t.id, COALESCE(adm.name, t.created_by, 'Finance') AS actor, "
+            "'payout_sent' AS action, 'payout' AS entity_type, t.id AS entity_id, "
+            "JSON_OBJECT('module', 'Payouts', 'name', "
+            "  CONCAT('₹', FORMAT(t.amount, 0), ' → ', COALESCE(t.bene_name, 'beneficiary'))) AS details, "
+            "t.created_at "
+            "FROM financedb.cf_transfers t "
+            "LEFT JOIN pkdb.admins adm ON adm.email COLLATE utf8mb4_general_ci "
+            "  = t.created_by COLLATE utf8mb4_general_ci "
+            "WHERE t.id > :wm ORDER BY t.id LIMIT :lim"
+        ),
+        "init": _init_sql("financedb.cf_transfers"),
+    },
+    {
         # Kouzina Admin Console. Already writes a rich audit_log; we resolve the
         # actor's name off pkdb.admins when it's a kftpl email, parse target's
         # "type:id" into entity, pass meta through as details, and drop the
