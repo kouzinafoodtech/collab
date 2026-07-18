@@ -1509,6 +1509,7 @@ function staleDays(p) {
 function Programs({ me, admins, authFetch, onOpenDept }) {
   const [items, setItems] = useState([]);
   const [deptRows, setDeptRows] = useState([]);
+  const [recent, setRecent] = useState([]); // latest update per program
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -1542,8 +1543,12 @@ function Programs({ me, admins, authFetch, onOpenDept }) {
       .then((r) => r.json())
       .then((d) => setDeptRows(d.rows || []))
       .catch(() => {});
+    authFetch("/programs/recent-updates")
+      .then((r) => r.json())
+      .then((d) => setRecent(d.updates || []))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [items.length]);
 
   async function loadMore() {
     if (loadingMore) return;
@@ -1624,6 +1629,26 @@ function Programs({ me, admins, authFetch, onOpenDept }) {
 
   return (
     <div className="prog-layout">
+    <aside className="prog-updates-rail">
+      <div className="lb-title">Recent updates</div>
+      {recent.map((u) => (
+        <div key={`${u.program_id}-${u.created_at}`} className="pu-item">
+          <div className="pu-prog">{u.program_name}</div>
+          <div className="pu-meta">
+            <span className="pu-author" style={{ color: actorColor(u.author_name) }}>
+              {u.author_name}
+            </span>
+            <span className="pu-time">{timeAgo(u.created_at)} ago</span>
+          </div>
+          {u.line && <div className="pu-line">“{u.line}”</div>}
+          <div className="pu-people">
+            {u.owner_name && <span>👤 {u.owner_name}</span>}
+            {u.assignee_name && <span>→ {u.assignee_name}</span>}
+          </div>
+        </div>
+      ))}
+      {recent.length === 0 && <div className="empty">No updates yet.</div>}
+    </aside>
     <main className="hub">
       <div className="hub-head">
         <button onClick={() => setShowNew(!showNew)}>

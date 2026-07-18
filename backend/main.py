@@ -4734,6 +4734,55 @@ def patch_program(
     return result
 
 
+@api.get("/programs/recent-updates")
+def programs_recent_updates(admin: dict = Depends(current_admin)):
+    """Latest update per active program, newest first — for the Programs rail.
+    Each row: who updated, when, the one-liner, plus the program's owner and
+    assignee."""
+    with SessionLocal() as db:
+        # newest update id per program
+        latest = (
+            db.query(
+                ProgramUpdateRow.program_id.label("pid"),
+                func.max(ProgramUpdateRow.id).label("mx"),
+            )
+            .group_by(ProgramUpdateRow.program_id)
+            .subquery()
+        )
+        rows = (
+            db.query(ProgramUpdateRow)
+            .join(latest, ProgramUpdateRow.id == latest.c.mx)
+            .order_by(ProgramUpdateRow.created_at.desc(), ProgramUpdateRow.id.desc())
+            .limit(60)
+            .all()
+        )
+        progs = {
+            p.id: p
+            for p in db.query(ProgramRow).filter(
+                ProgramRow.id.in_([r.program_id for r in rows]) if rows else False,
+                ProgramRow.active == 1,
+            )
+        }
+    out = []
+    for r in rows:
+        p = progs.get(r.program_id)
+        if not p:  # program deactivated/deleted — skip
+            continue
+        line = " ".join((r.body or "").split())
+        out.append(
+            {
+                "program_id": p.id,
+                "program_name": p.name,
+                "author_name": r.author_name or r.author_email,
+                "created_at": _iso_utc(r.created_at),
+                "line": (line[:120] + "…") if len(line) > 120 else line,
+                "owner_name": p.owner_name,
+                "assignee_name": p.assignee_name,
+            }
+        )
+    return {"updates": out}
+
+
 @api.get("/programs/{program_id}/updates")
 def program_updates(program_id: int, admin: dict = Depends(current_admin)):
     with SessionLocal() as db:
