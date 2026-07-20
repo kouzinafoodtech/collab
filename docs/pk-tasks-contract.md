@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS pkdb.pk_tasks (
   assigned_by_email VARCHAR(255) NULL,     -- Hema's KLU email
   assigned_by_name  VARCHAR(255) NULL,     -- "Hema Kumar"
   completion_note   TEXT NULL,             -- optional note/photo URL the worker adds
+  attachment_url    VARCHAR(500) NULL,     -- KLU-hosted PDF/image for the manager to open
   completed_at      DATETIME NULL,
   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -66,6 +67,10 @@ Both live inside the existing worker session (already authenticated as a
    ```
 
    Suggested label: "Tasks from office" / "Tasks from {assigned_by_name}".
+
+   If `attachment_url` is set, show it as a link/thumbnail — it's an absolute
+   path on KLU (`/api/pk-tasks/file/{token}`); prefix with `https://live.kftpl.com`.
+   The file (PDF or image) is served publicly, no auth needed.
 
 2. **Mark done.** When the worker completes a task:
 

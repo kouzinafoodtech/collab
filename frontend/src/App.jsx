@@ -3036,9 +3036,13 @@ function TasksView({ me, admins, authFetch, onBack }) {
   // Hema's exception: assign tasks to PartnerKart kitchen managers.
   const [pkWorkers, setPkWorkers] = useState([]);
   const [pkTasks, setPkTasks] = useState({ tasks: [], counts: {} });
-  const [pkSel, setPkSel] = useState([]); // selected worker ids
+  const [pkSel, setPkSel] = useState([]); // selected manager ids (compose)
   const [pkForm, setPkForm] = useState({ title: "", details: "", due_date: "" });
-  const [pkFilter, setPkFilter] = useState(""); // worker name filter
+  const [pkFilter, setPkFilter] = useState(""); // manager filter in compose picker
+  const [pkCompose, setPkCompose] = useState(false); // assign modal open
+  const [pkPerson, setPkPerson] = useState(""); // stats filter: manager name or ""
+  const [pkFile, setPkFile] = useState(null); // {url, filename}
+  const [pkUploading, setPkUploading] = useState(false);
 
   const canTeam = me.is_super || (me.owns || []).length > 0;
   const canPk = !!me.pk_tasks_enabled;
@@ -3060,6 +3064,21 @@ function TasksView({ me, admins, authFetch, onBack }) {
     if (box === "kitchen") loadPk();
   }, [box, loadPk]);
 
+  async function pkUpload(fileObj) {
+    if (!fileObj) return;
+    setPkUploading(true);
+    const fd = new FormData();
+    fd.append("file", fileObj);
+    try {
+      const res = await authFetch("/pk-tasks/upload", { method: "POST", body: fd });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) setPkFile({ url: d.url, filename: d.filename });
+      else setStatus(errText(d, "Upload failed"));
+    } finally {
+      setPkUploading(false);
+    }
+  }
+
   async function pkAssign(e) {
     e.preventDefault();
     if (!pkSel.length || !pkForm.title.trim()) {
@@ -3073,6 +3092,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
         title: pkForm.title.trim(),
         details: pkForm.details || null,
         due_date: pkForm.due_date || null,
+        attachment_url: pkFile?.url || null,
       }),
     }).catch(() => null);
     if (res && res.ok) {
@@ -3080,6 +3100,8 @@ function TasksView({ me, admins, authFetch, onBack }) {
       setStatus(`Assigned to ${d.assigned} manager${d.assigned === 1 ? "" : "s"} ✓`);
       setPkSel([]);
       setPkForm({ title: "", details: "", due_date: "" });
+      setPkFile(null);
+      setPkCompose(false);
       loadPk();
     } else {
       const d = res ? await res.json().catch(() => ({})) : {};
@@ -3092,6 +3114,19 @@ function TasksView({ me, admins, authFetch, onBack }) {
     await authFetch(`/pk-tasks/${id}`, { method: "PATCH" }).catch(() => {});
     loadPk();
   }
+
+  // Per-manager rollup for the stats view.
+  const pkRollup = (() => {
+    const by = {};
+    for (const t of pkTasks.tasks || []) {
+      const k = t.manager;
+      by[k] = by[k] || { manager: k, kitchen: t.kitchen, pending: 0, done: 0, cancelled: 0, total: 0 };
+      by[k].total += 1;
+      by[k][t.status] = (by[k][t.status] || 0) + 1;
+    }
+    return Object.values(by).sort((a, b) => b.pending - a.pending || b.total - a.total);
+  })();
+  const pkShown = (pkTasks.tasks || []).filter((t) => !pkPerson || t.manager === pkPerson);
   const teamDepts = me.is_super ? depts : (me.owns || []);
 
   const load = useCallback(() => {
@@ -3353,13 +3388,147 @@ function TasksView({ me, admins, authFetch, onBack }) {
 
         {box === "kitchen" && canPk && (
           <>
-            <div className="muted pk-note">
-              Assign tasks to PartnerKart kitchen managers. They see and finish them
-              in their PK local-orders inbox (same phone + PIN login); status updates
-              here as they complete.
+            <div className="pk-topbar">
+              <button className="pk-assign-btn" onClick={() => setPkCompose(true)}>
+                ✏️ Assign task
+              </button>
+              {(() => {
+                const p = pkTasks.counts?.pending || 0;
+                const d = pkTasks.counts?.done || 0;
+                const rate = p + d ? Math.round((d / (p + d)) * 100) : 0;
+                return (
+                  <div className="pk-stat-row">
+                    <div className="pk-stat"><b>{p}</b><span>pending</span></div>
+                    <div className="pk-stat"><b>{d}</b><span>done</span></div>
+                    <div className="pk-stat"><b>{rate}%</b><span>completion</span></div>
+                  </div>
+                );
+              })()}
             </div>
-            <form className="card prog-form pk-assign" onSubmit={pkAssign}>
+
+            <div className="pk-filter-row">
+              <span className="compose-lbl">Manager</span>
+              <select value={pkPerson} onChange={(e) => setPkPerson(e.target.value)}>
+                <option value="">All managers</option>
+                {pkRollup.map((r) => (
+                  <option key={r.manager} value={r.manager}>
+                    {r.manager} — {r.pending} pending / {r.done} done
+                  </option>
+                ))}
+              </select>
+              {pkPerson && (
+                <button className="link" onClick={() => setPkPerson("")}>clear</button>
+              )}
+            </div>
+
+            {!pkPerson && (
+              <div className="card pk-rollup">
+                <div className="pk-rollup-head">
+                  <span>Manager</span><span>Kitchen</span>
+                  <span>Pending</span><span>Done</span><span>Rate</span>
+                </div>
+                {pkRollup.map((r) => {
+                  const rate = r.pending + r.done
+                    ? Math.round((r.done / (r.pending + r.done)) * 100) : 0;
+                  return (
+                    <button
+                      key={r.manager}
+                      className="pk-rollup-row"
+                      onClick={() => setPkPerson(r.manager)}
+                      title={`See ${r.manager}'s tasks`}
+                    >
+                      <span className="pk-rollup-name">{r.manager}</span>
+                      <span className="muted pk-rollup-kit">{r.kitchen}</span>
+                      <span className={r.pending ? "pk-num-pending" : "muted"}>{r.pending}</span>
+                      <span className="muted">{r.done}</span>
+                      <span className={`pk-rate ${rate >= 80 ? "hi" : rate >= 40 ? "mid" : "lo"}`}>
+                        {rate}%
+                      </span>
+                    </button>
+                  );
+                })}
+                {pkRollup.length === 0 && (
+                  <div className="empty">No manager tasks assigned yet.</div>
+                )}
+              </div>
+            )}
+
+            <div className="conv-section">
+              <div className="conv-section-title">
+                {pkPerson ? `${pkPerson}'s tasks · ${pkShown.length}` : `All tasks · ${pkShown.length}`}
+              </div>
+              {pkShown.map((t) => (
+                <div key={t.id} className={`task-row ${t.status === "done" ? "task-done" : ""} ${t.status === "cancelled" ? "task-cancelled" : ""}`}>
+                  <div className="task-main">
+                    <div className="task-id">
+                      <span className="task-title">
+                        {t.title}
+                        <span className={`chip ${t.status === "done" ? "chip-order" : t.status === "cancelled" ? "chip-vendor" : "chip-other"}`}>
+                          {t.status}
+                        </span>
+                      </span>
+                      <span className="muted task-sub">
+                        {t.manager} · {t.kitchen}
+                        {t.assigned_by && ` · by ${t.assigned_by}`}
+                        {t.due_date && ` · due ${fmtDate(t.due_date)}`}
+                        {t.completed_at && ` · done ${timeAgo(t.completed_at)} ago`}
+                      </span>
+                      {t.details && <span className="muted pk-task-details">{t.details}</span>}
+                      <span className="pk-task-links">
+                        {t.attachment_url && (
+                          <a className="link" href={t.attachment_url} target="_blank" rel="noreferrer">
+                            📎 attachment
+                          </a>
+                        )}
+                        {t.completion_note && <span className="muted">📝 {t.completion_note}</span>}
+                      </span>
+                    </div>
+                    {t.status === "pending" && (
+                      <button className="link" onClick={() => pkCancel(t.id)}>
+                        cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {pkShown.length === 0 && (
+                <div className="empty big">No tasks{pkPerson ? " for this manager" : ""} yet.</div>
+              )}
+            </div>
+          </>
+        )}
+      </main>
+
+      <button className="tasks-fab" onClick={() => setCompose(true)} aria-label="Create task">
+        ✏️
+      </button>
+
+      {compose && (
+        <ComposeTask
+          me={me}
+          admins={admins}
+          depts={depts}
+          authFetch={authFetch}
+          onClose={() => setCompose(false)}
+          onSent={() => {
+            setCompose(false);
+            setStatus("Task sent — they've been notified ✓");
+            load();
+            setBox("sent");
+          }}
+        />
+      )}
+
+      {pkCompose && (
+        <div className="modal-backdrop" onClick={() => setPkCompose(false)}>
+          <div className="modal compose-modal pk-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <strong>🍳 Assign task to kitchen managers</strong>
+              <button className="link" onClick={() => setPkCompose(false)}>✕</button>
+            </div>
+            <form className="compose-form" onSubmit={pkAssign}>
               <input
+                autoFocus
                 placeholder="Task — what should they do?"
                 value={pkForm.title}
                 onChange={(e) => setPkForm({ ...pkForm, title: e.target.value })}
@@ -3370,15 +3539,38 @@ function TasksView({ me, admins, authFetch, onBack }) {
                 value={pkForm.details}
                 onChange={(e) => setPkForm({ ...pkForm, details: e.target.value })}
               />
-              <div className="pk-assign-row">
-                <label className="compose-lbl">Due</label>
-                <input
-                  type="date"
-                  value={pkForm.due_date}
-                  onChange={(e) => setPkForm({ ...pkForm, due_date: e.target.value })}
-                />
-                <span className="muted">{pkSel.length} selected</span>
+              <div className="compose-grid">
+                <label className="compose-field">
+                  <span className="compose-lbl">Due date</span>
+                  <input
+                    type="date"
+                    value={pkForm.due_date}
+                    onChange={(e) => setPkForm({ ...pkForm, due_date: e.target.value })}
+                  />
+                </label>
+                <label className="compose-field">
+                  <span className="compose-lbl">Attachment (PDF / image)</span>
+                  {pkFile ? (
+                    <span className="pk-file-chip">
+                      📎 {pkFile.filename || "file"}
+                      <button type="button" className="link" onClick={() => setPkFile(null)}>
+                        remove
+                      </button>
+                    </span>
+                  ) : (
+                    <label className="pk-file-btn">
+                      {pkUploading ? "Uploading…" : "Choose file"}
+                      <input
+                        type="file"
+                        hidden
+                        accept="application/pdf,image/*"
+                        onChange={(e) => pkUpload(e.target.files?.[0])}
+                      />
+                    </label>
+                  )}
+                </label>
               </div>
+
               <div className="pk-worker-head">
                 <input
                   className="pk-worker-filter"
@@ -3429,68 +3621,12 @@ function TasksView({ me, admins, authFetch, onBack }) {
                   <div className="empty">No managers available.</div>
                 )}
               </div>
-              <button type="submit">
+              <button type="submit" disabled={pkUploading}>
                 Assign to {pkSel.length || "…"} manager{pkSel.length === 1 ? "" : "s"}
               </button>
             </form>
-
-            <div className="conv-section">
-              <div className="conv-section-title">
-                Assigned · {pkTasks.counts?.pending || 0} pending ·{" "}
-                {pkTasks.counts?.done || 0} done
-              </div>
-              {pkTasks.tasks.map((t) => (
-                <div key={t.id} className={`task-row ${t.status === "done" ? "task-done" : ""}`}>
-                  <div className="task-main">
-                    <div className="task-id">
-                      <span className="task-title">
-                        {t.title}
-                        <span className={`chip ${t.status === "done" ? "chip-order" : "chip-other"}`}>
-                          {t.status}
-                        </span>
-                      </span>
-                      <span className="muted task-sub">
-                        {t.manager} · {t.kitchen}
-                        {t.assigned_by && ` · by ${t.assigned_by}`}
-                        {t.due_date && ` · due ${fmtDate(t.due_date)}`}
-                        {t.completed_at && ` · done ${timeAgo(t.completed_at)} ago`}
-                        {t.completion_note && ` · 📝 ${t.completion_note}`}
-                      </span>
-                    </div>
-                    {t.status === "pending" && (
-                      <button className="link" onClick={() => pkCancel(t.id)}>
-                        cancel
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {pkTasks.tasks.length === 0 && (
-                <div className="empty big">No manager tasks assigned yet.</div>
-              )}
-            </div>
-          </>
-        )}
-      </main>
-
-      <button className="tasks-fab" onClick={() => setCompose(true)} aria-label="Create task">
-        ✏️
-      </button>
-
-      {compose && (
-        <ComposeTask
-          me={me}
-          admins={admins}
-          depts={depts}
-          authFetch={authFetch}
-          onClose={() => setCompose(false)}
-          onSent={() => {
-            setCompose(false);
-            setStatus("Task sent — they've been notified ✓");
-            load();
-            setBox("sent");
-          }}
-        />
+          </div>
+        </div>
       )}
     </div>
   );

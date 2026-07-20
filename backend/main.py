@@ -27,6 +27,7 @@ import io
 import json
 import os
 import re
+import secrets
 import smtplib
 import ssl
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,7 @@ from fastapi import (
     BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -493,11 +495,33 @@ PK_TASKS_DDL = (
     " INDEX idx_pk_tasks_by (assigned_by_email)"
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 )
+# One attachment (PDF/image) per task, viewable by the manager. Stored in the DB
+# (the container filesystem is ephemeral and no blob store is configured); served
+# publicly by KLU at /api/pk-tasks/file/{token} so the PartnerKart app can link it.
+PK_FILES_DDL = (
+    "CREATE TABLE IF NOT EXISTS pkdb.pk_task_files ("
+    " id INT PRIMARY KEY AUTO_INCREMENT,"
+    " token VARCHAR(40) NOT NULL UNIQUE,"
+    " filename VARCHAR(300) NULL,"
+    " mime VARCHAR(120) NULL,"
+    " data LONGBLOB NOT NULL,"
+    " uploaded_by VARCHAR(255) NULL,"
+    " created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+)
 PK_TASKS_READY = False
 if IS_MYSQL:
     try:
         with engine.begin() as _conn:
             _conn.execute(text(PK_TASKS_DDL))
+            _conn.execute(text(PK_FILES_DDL))
+            # attachment_url added after the fact — ignore "duplicate column".
+            try:
+                _conn.execute(
+                    text("ALTER TABLE pkdb.pk_tasks ADD COLUMN attachment_url VARCHAR(500) NULL")
+                )
+            except Exception:
+                pass
         PK_TASKS_READY = True
     except Exception:
         PK_TASKS_READY = False  # no CREATE grant — PartnerKart team provisions it
@@ -2612,6 +2636,7 @@ class PkAssignIn(BaseModel):
     title: str = Field(..., min_length=3, max_length=500)
     details: Optional[str] = Field(default=None, max_length=2000)
     due_date: Optional[str] = None  # YYYY-MM-DD
+    attachment_url: Optional[str] = Field(default=None, max_length=500)
 
 
 @api.get("/pk-tasks/workers")
@@ -2639,9 +2664,62 @@ def pk_task_workers(admin: dict = Depends(current_admin)):
     }
 
 
+PK_MAX_FILE = 10 * 1024 * 1024  # 10 MB
+PK_FILE_MIMES = {
+    "application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif",
+}
+
+
+@api.post("/pk-tasks/upload")
+async def pk_task_upload(
+    file: UploadFile = File(...), admin: dict = Depends(current_admin)
+):
+    """Store one attachment (PDF/image) and return a public URL to embed on a
+    task. Managers open it from the PartnerKart app."""
+    _require_pk_tasks(admin)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > PK_MAX_FILE:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    mime = (file.content_type or "").lower()
+    if mime not in PK_FILE_MIMES:
+        raise HTTPException(status_code=400, detail="Only PDF or image files")
+    token = secrets.token_urlsafe(24)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO pkdb.pk_task_files (token, filename, mime, data, uploaded_by, created_at) "
+                "VALUES (:tok, :fn, :mt, :d, :by, NOW())"
+            ),
+            {"tok": token, "fn": (file.filename or "")[:300], "mt": mime,
+             "d": data, "by": admin["email"]},
+        )
+    return {"url": f"/api/pk-tasks/file/{token}", "filename": file.filename}
+
+
+@api.get("/pk-tasks/file/{token}")
+def pk_task_file(token: str):
+    """Serve an attachment by token — public so PartnerKart managers can open it."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT filename, mime, data FROM pkdb.pk_task_files WHERE token = :tok"),
+            {"tok": token},
+        ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    headers = {}
+    if row["filename"]:
+        headers["Content-Disposition"] = f'inline; filename="{row["filename"]}"'
+    return Response(
+        content=row["data"], media_type=row["mime"] or "application/octet-stream",
+        headers=headers,
+    )
+
+
 @api.post("/pk-tasks/assign", status_code=201)
 def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
-    """Assign one task to many workers at once (bulk / combination)."""
+    """Assign one task to many managers at once (bulk / combination)."""
     _require_pk_tasks(admin)
     due = None
     if payload.due_date:
@@ -2651,10 +2729,11 @@ def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
             raise HTTPException(status_code=400, detail="Bad due date")
     title = payload.title.strip()
     details = (payload.details or "").strip() or None
+    att = (payload.attachment_url or "").strip() or None
     who = admin.get("name") or admin["email"]
     created = 0
     with engine.begin() as conn:
-        # valid, active worker ids only
+        # valid, active manager ids only
         valid = {
             r[0]
             for r in conn.execute(
@@ -2674,11 +2753,11 @@ def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
                 text(
                     "INSERT INTO pkdb.pk_tasks "
                     "(local_user_id, kitchen_id, title, details, status, due_date, "
-                    " assigned_by_email, assigned_by_name, created_at) "
-                    "VALUES (:u, :k, :t, :d, 'pending', :due, :ae, :an, NOW())"
+                    " assigned_by_email, assigned_by_name, attachment_url, created_at) "
+                    "VALUES (:u, :k, :t, :d, 'pending', :due, :ae, :an, :att, NOW())"
                 ),
                 {"u": wid, "k": kid, "t": title, "d": details, "due": due,
-                 "ae": admin["email"], "an": who},
+                 "ae": admin["email"], "an": who, "att": att},
             )
             created += 1
     emit_live_event(
@@ -2708,7 +2787,7 @@ def pk_tasks_list(
             text(
                 "SELECT t.id, t.title, t.details, t.status, t.due_date, "
                 " t.completion_note, t.completed_at, t.created_at, t.assigned_by_name, "
-                " u.name AS worker, u.phone, k.name AS kitchen "
+                " t.attachment_url, u.name AS worker, u.phone, k.name AS kitchen "
                 "FROM pkdb.pk_tasks t "
                 "LEFT JOIN pkdb.local_users u ON u.id = t.local_user_id "
                 "LEFT JOIN pkdb.coco_kitchens k ON k.id = t.kitchen_id "
@@ -2728,6 +2807,7 @@ def pk_tasks_list(
             "manager": (r["worker"] or "").strip() or r["phone"],
             "kitchen": r["kitchen"] or "—",
             "assigned_by": r["assigned_by_name"],
+            "attachment_url": r["attachment_url"],
         })
     counts = {"pending": 0, "done": 0, "cancelled": 0}
     for t in out:
