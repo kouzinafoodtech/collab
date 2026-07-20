@@ -3033,7 +3033,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
   const [showTemplates, setShowTemplates] = useState(false);
   const [templates, setTemplates] = useState([]);
   const [status, setStatus] = useState("");
-  // Hema's exception: assign tasks to PartnerKart kitchen workers.
+  // Hema's exception: assign tasks to PartnerKart kitchen managers.
   const [pkWorkers, setPkWorkers] = useState([]);
   const [pkTasks, setPkTasks] = useState({ tasks: [], counts: {} });
   const [pkSel, setPkSel] = useState([]); // selected worker ids
@@ -3063,7 +3063,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
   async function pkAssign(e) {
     e.preventDefault();
     if (!pkSel.length || !pkForm.title.trim()) {
-      setStatus("Pick at least one worker and enter a task");
+      setStatus("Pick at least one manager and enter a task");
       return;
     }
     const res = await authFetch("/pk-tasks/assign", {
@@ -3077,7 +3077,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
     }).catch(() => null);
     if (res && res.ok) {
       const d = await res.json();
-      setStatus(`Assigned to ${d.assigned} worker${d.assigned === 1 ? "" : "s"} ✓`);
+      setStatus(`Assigned to ${d.assigned} manager${d.assigned === 1 ? "" : "s"} ✓`);
       setPkSel([]);
       setPkForm({ title: "", details: "", due_date: "" });
       loadPk();
@@ -3201,7 +3201,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
           <NavItem
             id="kitchen"
             icon="🍳"
-            label="Kitchen workers"
+            label="Kitchen managers"
             count={pkTasks.counts?.pending || 0}
           />
         )}
@@ -3215,7 +3215,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
             {box === "done" && "✅ Done"}
             {box === "sent" && "📤 Sent by me"}
             {box === "team" && `👥 ${team?.department || "Team"}`}
-            {box === "kitchen" && "🍳 Kitchen worker tasks"}
+            {box === "kitchen" && "🍳 Kitchen manager tasks"}
           </strong>
           {box === "inbox" && my.overdue > 0 && (
             <span className="conv-wait-count">{my.overdue} overdue</span>
@@ -3354,7 +3354,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
         {box === "kitchen" && canPk && (
           <>
             <div className="muted pk-note">
-              Assign tasks to PartnerKart kitchen workers. They see and finish them
+              Assign tasks to PartnerKart kitchen managers. They see and finish them
               in their PK local-orders inbox (same phone + PIN login); status updates
               here as they complete.
             </div>
@@ -3382,7 +3382,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
               <div className="pk-worker-head">
                 <input
                   className="pk-worker-filter"
-                  placeholder="Filter workers / kitchens…"
+                  placeholder="Filter managers / kitchens…"
                   value={pkFilter}
                   onChange={(e) => setPkFilter(e.target.value)}
                 />
@@ -3426,11 +3426,11 @@ function TasksView({ me, admins, authFetch, onBack }) {
                     </label>
                   ))}
                 {pkWorkers.length === 0 && (
-                  <div className="empty">No workers available.</div>
+                  <div className="empty">No managers available.</div>
                 )}
               </div>
               <button type="submit">
-                Assign to {pkSel.length || "…"} worker{pkSel.length === 1 ? "" : "s"}
+                Assign to {pkSel.length || "…"} manager{pkSel.length === 1 ? "" : "s"}
               </button>
             </form>
 
@@ -3450,7 +3450,8 @@ function TasksView({ me, admins, authFetch, onBack }) {
                         </span>
                       </span>
                       <span className="muted task-sub">
-                        {t.worker} · {t.kitchen}
+                        {t.manager} · {t.kitchen}
+                        {t.assigned_by && ` · by ${t.assigned_by}`}
                         {t.due_date && ` · due ${fmtDate(t.due_date)}`}
                         {t.completed_at && ` · done ${timeAgo(t.completed_at)} ago`}
                         {t.completion_note && ` · 📝 ${t.completion_note}`}
@@ -3465,7 +3466,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
                 </div>
               ))}
               {pkTasks.tasks.length === 0 && (
-                <div className="empty big">No worker tasks assigned yet.</div>
+                <div className="empty big">No manager tasks assigned yet.</div>
               )}
             </div>
           </>

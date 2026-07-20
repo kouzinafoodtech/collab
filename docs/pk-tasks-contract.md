@@ -1,6 +1,6 @@
 # PartnerKart ↔ Kouzina Live: worker tasks (`pkdb.pk_tasks`)
 
-This is the integration contract for the **kitchen-worker task** feature (an
+This is the integration contract for the **kitchen-manager task** feature (an
 exception requested by **Hema Kumar**). Kouzina Live (KLU) lets Hema assign
 tasks to PartnerKart **`local_users`** (kitchen workers who log in with
 phone + PIN). The tasks live in a shared table, **`pkdb.pk_tasks`**. KLU owns
@@ -94,7 +94,7 @@ time (KLU reads `status` / `completed_at` directly).
 - `GET  /api/pk-tasks`         — Hema's list with live status + counts
 - `PATCH /api/pk-tasks/{id}`   — cancel a pending task
 
-Access is gated to Hema (`hemakumar.s@kftpl.com`) and superadmins.
+Access (assign + review all tasks) is gated to Hema (`hemakumar.s@kftpl.com`), Shashank S (`shashank.s@kftpl.com`), and superadmins.
 
 ## Notes / open questions for PartnerKart
 

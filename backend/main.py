@@ -2582,11 +2582,19 @@ async def import_task_tracker(
 # rows live in pkdb.pk_tasks; the PartnerKart app surfaces them in the worker's
 # local-orders inbox and marks them done. KLU owns creation + Hema's reflection.
 
-HEMA_EMAIL = "hemakumar.s@kftpl.com"
+# Who can assign & review kitchen-manager tasks (plus all superadmins). These
+# people all see every manager's tasks, not just the ones they assigned.
+PK_TASKS_ALLOWED = {
+    "hemakumar.s@kftpl.com",  # Hema Kumar
+    "shashank.s@kftpl.com",   # Shashank S (ops)
+}
 
 
 def _can_pk_tasks(admin: dict) -> bool:
-    return is_superadmin(admin["email"]) or _norm_email(admin["email"]) == HEMA_EMAIL
+    return (
+        is_superadmin(admin["email"])
+        or _norm_email(admin["email"]) in PK_TASKS_ALLOWED
+    )
 
 
 def _require_pk_tasks(admin: dict):
@@ -2675,7 +2683,7 @@ def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
             created += 1
     emit_live_event(
         who, "pk_tasks_assigned",
-        f"assigned a task to {created} kitchen worker{'s' if created != 1 else ''} · “{title[:60]}”",
+        f"assigned a task to {created} kitchen manager{'s' if created != 1 else ''} · “{title[:60]}”",
         {"module": "Tasks"},
     )
     return {"ok": True, "assigned": created}
@@ -2688,11 +2696,10 @@ def pk_tasks_list(
 ):
     """Hema's reflection view: tasks she assigned, with live status from PK."""
     _require_pk_tasks(admin)
+    # The authorized reviewers (Hema, Shashank, superadmins) all see EVERY
+    # manager's tasks — not just the ones they personally assigned.
     where = "WHERE 1=1"
     params: dict = {}
-    if not is_superadmin(admin["email"]):
-        where += " AND t.assigned_by_email = :me"
-        params["me"] = admin["email"]
     if status in ("pending", "done", "cancelled"):
         where += " AND t.status = :st"
         params["st"] = status
@@ -2700,7 +2707,7 @@ def pk_tasks_list(
         rows = conn.execute(
             text(
                 "SELECT t.id, t.title, t.details, t.status, t.due_date, "
-                " t.completion_note, t.completed_at, t.created_at, "
+                " t.completion_note, t.completed_at, t.created_at, t.assigned_by_name, "
                 " u.name AS worker, u.phone, k.name AS kitchen "
                 "FROM pkdb.pk_tasks t "
                 "LEFT JOIN pkdb.local_users u ON u.id = t.local_user_id "
@@ -2718,8 +2725,9 @@ def pk_tasks_list(
             "completion_note": r["completion_note"],
             "completed_at": _iso_utc(r["completed_at"]) if r["completed_at"] else None,
             "created_at": _iso_utc(r["created_at"]) if r["created_at"] else None,
-            "worker": (r["worker"] or "").strip() or r["phone"],
+            "manager": (r["worker"] or "").strip() or r["phone"],
             "kitchen": r["kitchen"] or "—",
+            "assigned_by": r["assigned_by_name"],
         })
     counts = {"pending": 0, "done": 0, "cancelled": 0}
     for t in out:
@@ -2732,14 +2740,12 @@ def pk_task_cancel(task_id: int, admin: dict = Depends(current_admin)):
     """Cancel a still-pending task Hema assigned (won't touch done ones)."""
     _require_pk_tasks(admin)
     with engine.begin() as conn:
-        owner = conn.execute(
-            text("SELECT assigned_by_email FROM pkdb.pk_tasks WHERE id = :id"),
-            {"id": task_id},
+        exists = conn.execute(
+            text("SELECT 1 FROM pkdb.pk_tasks WHERE id = :id"), {"id": task_id}
         ).scalar()
-        if owner is None:
+        if not exists:
             raise HTTPException(status_code=404, detail="Not found")
-        if not is_superadmin(admin["email"]) and _norm_email(owner) != _norm_email(admin["email"]):
-            raise HTTPException(status_code=403, detail="Not your task")
+        # Any authorized reviewer can cancel a pending task.
         conn.execute(
             text("UPDATE pkdb.pk_tasks SET status = 'cancelled' "
                  "WHERE id = :id AND status = 'pending'"),
