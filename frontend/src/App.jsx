@@ -150,6 +150,7 @@ export default function App() {
             department: d.department || null,
             function: d.function || null,
             owns: d.owns || [],
+            pk_tasks_enabled: !!d.pk_tasks_enabled,
           };
           setMe(next);
           localStorage.setItem("me", JSON.stringify(next));
@@ -3032,8 +3033,65 @@ function TasksView({ me, admins, authFetch, onBack }) {
   const [showTemplates, setShowTemplates] = useState(false);
   const [templates, setTemplates] = useState([]);
   const [status, setStatus] = useState("");
+  // Hema's exception: assign tasks to PartnerKart kitchen workers.
+  const [pkWorkers, setPkWorkers] = useState([]);
+  const [pkTasks, setPkTasks] = useState({ tasks: [], counts: {} });
+  const [pkSel, setPkSel] = useState([]); // selected worker ids
+  const [pkForm, setPkForm] = useState({ title: "", details: "", due_date: "" });
+  const [pkFilter, setPkFilter] = useState(""); // worker name filter
 
   const canTeam = me.is_super || (me.owns || []).length > 0;
+  const canPk = !!me.pk_tasks_enabled;
+
+  const loadPk = useCallback(() => {
+    if (!canPk) return;
+    authFetch("/pk-tasks/workers")
+      .then((r) => (r.ok ? r.json() : { workers: [] }))
+      .then((d) => setPkWorkers(d.workers || []))
+      .catch(() => {});
+    authFetch("/pk-tasks")
+      .then((r) => (r.ok ? r.json() : { tasks: [], counts: {} }))
+      .then((d) => setPkTasks(d.tasks ? d : { tasks: [], counts: {} }))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canPk]);
+
+  useEffect(() => {
+    if (box === "kitchen") loadPk();
+  }, [box, loadPk]);
+
+  async function pkAssign(e) {
+    e.preventDefault();
+    if (!pkSel.length || !pkForm.title.trim()) {
+      setStatus("Pick at least one worker and enter a task");
+      return;
+    }
+    const res = await authFetch("/pk-tasks/assign", {
+      method: "POST",
+      body: JSON.stringify({
+        worker_ids: pkSel,
+        title: pkForm.title.trim(),
+        details: pkForm.details || null,
+        due_date: pkForm.due_date || null,
+      }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      const d = await res.json();
+      setStatus(`Assigned to ${d.assigned} worker${d.assigned === 1 ? "" : "s"} ✓`);
+      setPkSel([]);
+      setPkForm({ title: "", details: "", due_date: "" });
+      loadPk();
+    } else {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      setStatus(errText(d, "Could not assign"));
+    }
+  }
+
+  async function pkCancel(id) {
+    if (!window.confirm("Cancel this task?")) return;
+    await authFetch(`/pk-tasks/${id}`, { method: "PATCH" }).catch(() => {});
+    loadPk();
+  }
   const teamDepts = me.is_super ? depts : (me.owns || []);
 
   const load = useCallback(() => {
@@ -3139,6 +3197,14 @@ function TasksView({ me, admins, authFetch, onBack }) {
         <NavItem id="done" icon="✅" label="Done" count={0} />
         <NavItem id="sent" icon="📤" label="Sent" count={0} />
         {canTeam && <NavItem id="team" icon="👥" label="Team" count={0} />}
+        {canPk && (
+          <NavItem
+            id="kitchen"
+            icon="🍳"
+            label="Kitchen workers"
+            count={pkTasks.counts?.pending || 0}
+          />
+        )}
       </aside>
 
       <main className="hub tasks-hub">
@@ -3149,6 +3215,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
             {box === "done" && "✅ Done"}
             {box === "sent" && "📤 Sent by me"}
             {box === "team" && `👥 ${team?.department || "Team"}`}
+            {box === "kitchen" && "🍳 Kitchen worker tasks"}
           </strong>
           {box === "inbox" && my.overdue > 0 && (
             <span className="conv-wait-count">{my.overdue} overdue</span>
@@ -3280,6 +3347,126 @@ function TasksView({ me, admins, authFetch, onBack }) {
                 <div className="empty big">No tasks here this month.</div>
               )}
               {!team && <div className="empty big">Pick a department you own.</div>}
+            </div>
+          </>
+        )}
+
+        {box === "kitchen" && canPk && (
+          <>
+            <div className="muted pk-note">
+              Assign tasks to PartnerKart kitchen workers. They see and finish them
+              in their PK local-orders inbox (same phone + PIN login); status updates
+              here as they complete.
+            </div>
+            <form className="card prog-form pk-assign" onSubmit={pkAssign}>
+              <input
+                placeholder="Task — what should they do?"
+                value={pkForm.title}
+                onChange={(e) => setPkForm({ ...pkForm, title: e.target.value })}
+              />
+              <textarea
+                rows={2}
+                placeholder="Details (optional)"
+                value={pkForm.details}
+                onChange={(e) => setPkForm({ ...pkForm, details: e.target.value })}
+              />
+              <div className="pk-assign-row">
+                <label className="compose-lbl">Due</label>
+                <input
+                  type="date"
+                  value={pkForm.due_date}
+                  onChange={(e) => setPkForm({ ...pkForm, due_date: e.target.value })}
+                />
+                <span className="muted">{pkSel.length} selected</span>
+              </div>
+              <div className="pk-worker-head">
+                <input
+                  className="pk-worker-filter"
+                  placeholder="Filter workers / kitchens…"
+                  value={pkFilter}
+                  onChange={(e) => setPkFilter(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() =>
+                    setPkSel(
+                      pkSel.length === pkWorkers.length ? [] : pkWorkers.map((w) => w.id)
+                    )
+                  }
+                >
+                  {pkSel.length === pkWorkers.length ? "clear all" : "select all"}
+                </button>
+              </div>
+              <div className="pk-workers">
+                {pkWorkers
+                  .filter((w) => {
+                    const q = pkFilter.toLowerCase();
+                    return (
+                      !q ||
+                      (w.name || "").toLowerCase().includes(q) ||
+                      (w.kitchens || "").toLowerCase().includes(q)
+                    );
+                  })
+                  .map((w) => (
+                    <label key={w.id} className="pk-worker">
+                      <input
+                        type="checkbox"
+                        checked={pkSel.includes(w.id)}
+                        onChange={(e) =>
+                          setPkSel((cur) =>
+                            e.target.checked
+                              ? [...cur, w.id]
+                              : cur.filter((x) => x !== w.id)
+                          )
+                        }
+                      />
+                      <span className="pk-worker-name">{w.name}</span>
+                      <span className="muted pk-worker-kit">{w.kitchens}</span>
+                    </label>
+                  ))}
+                {pkWorkers.length === 0 && (
+                  <div className="empty">No workers available.</div>
+                )}
+              </div>
+              <button type="submit">
+                Assign to {pkSel.length || "…"} worker{pkSel.length === 1 ? "" : "s"}
+              </button>
+            </form>
+
+            <div className="conv-section">
+              <div className="conv-section-title">
+                Assigned · {pkTasks.counts?.pending || 0} pending ·{" "}
+                {pkTasks.counts?.done || 0} done
+              </div>
+              {pkTasks.tasks.map((t) => (
+                <div key={t.id} className={`task-row ${t.status === "done" ? "task-done" : ""}`}>
+                  <div className="task-main">
+                    <div className="task-id">
+                      <span className="task-title">
+                        {t.title}
+                        <span className={`chip ${t.status === "done" ? "chip-order" : "chip-other"}`}>
+                          {t.status}
+                        </span>
+                      </span>
+                      <span className="muted task-sub">
+                        {t.worker} · {t.kitchen}
+                        {t.due_date && ` · due ${fmtDate(t.due_date)}`}
+                        {t.completed_at && ` · done ${timeAgo(t.completed_at)} ago`}
+                        {t.completion_note && ` · 📝 ${t.completion_note}`}
+                      </span>
+                    </div>
+                    {t.status === "pending" && (
+                      <button className="link" onClick={() => pkCancel(t.id)}>
+                        cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {pkTasks.tasks.length === 0 && (
+                <div className="empty big">No worker tasks assigned yet.</div>
+              )}
             </div>
           </>
         )}

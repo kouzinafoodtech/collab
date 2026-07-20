@@ -468,6 +468,40 @@ try:
 except Exception:
     pass
 
+# pk_tasks lives in pkdb (the PartnerKart database, shared) — it's the contract
+# for Hema's exception: KLU writes tasks here, the PartnerKart app shows them in
+# a worker's local-orders inbox (by local_user_id) and marks them done. It is NOT
+# a SQLAlchemy model (that would create it in chatdb); create it with raw DDL. If
+# the app's DB user lacks CREATE on pkdb, the PartnerKart team runs the same DDL —
+# the feature just stays dormant until the table exists.
+PK_TASKS_DDL = (
+    "CREATE TABLE IF NOT EXISTS pkdb.pk_tasks ("
+    " id INT PRIMARY KEY AUTO_INCREMENT,"
+    " local_user_id INT NOT NULL,"
+    " kitchen_id INT NULL,"
+    " title VARCHAR(500) NOT NULL,"
+    " details TEXT NULL,"
+    " status VARCHAR(16) NOT NULL DEFAULT 'pending',"  # pending | done | cancelled
+    " due_date DATE NULL,"
+    " assigned_by_email VARCHAR(255) NULL,"
+    " assigned_by_name VARCHAR(255) NULL,"
+    " completion_note TEXT NULL,"
+    " completed_at DATETIME NULL,"
+    " created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+    " updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+    " INDEX idx_pk_tasks_user (local_user_id, status),"
+    " INDEX idx_pk_tasks_by (assigned_by_email)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+)
+PK_TASKS_READY = False
+if IS_MYSQL:
+    try:
+        with engine.begin() as _conn:
+            _conn.execute(text(PK_TASKS_DDL))
+        PK_TASKS_READY = True
+    except Exception:
+        PK_TASKS_READY = False  # no CREATE grant — PartnerKart team provisions it
+
 # Backfill: pre-existing programs inherit their owner's department (idempotent).
 try:
     with SessionLocal() as _db:
@@ -1217,6 +1251,7 @@ def me(admin: dict = Depends(current_admin)):
         out["function"] = p.function if p else None
     out["is_super"] = is_superadmin(admin["email"])
     out["owns"] = sorted(owned_departments_of(admin))
+    out["pk_tasks_enabled"] = _can_pk_tasks(admin)  # Hema's exception
     return out
 
 
@@ -2540,6 +2575,177 @@ async def import_task_tracker(
     )
     plan.update({"applied": True, "created": created})
     return plan
+
+
+# ---- PK worker tasks (Hema's exception) ------------------------------------------
+# Hema assigns tasks to PartnerKart local_users (kitchen workers, phone+PIN). The
+# rows live in pkdb.pk_tasks; the PartnerKart app surfaces them in the worker's
+# local-orders inbox and marks them done. KLU owns creation + Hema's reflection.
+
+HEMA_EMAIL = "hemakumar.s@kftpl.com"
+
+
+def _can_pk_tasks(admin: dict) -> bool:
+    return is_superadmin(admin["email"]) or _norm_email(admin["email"]) == HEMA_EMAIL
+
+
+def _require_pk_tasks(admin: dict):
+    if not _can_pk_tasks(admin):
+        raise HTTPException(status_code=403, detail="Not enabled for this account")
+    if not PK_TASKS_READY:
+        raise HTTPException(
+            status_code=503,
+            detail="Worker tasks aren't provisioned yet (pkdb.pk_tasks missing).",
+        )
+
+
+class PkAssignIn(BaseModel):
+    worker_ids: list[int] = Field(..., min_length=1)
+    title: str = Field(..., min_length=3, max_length=500)
+    details: Optional[str] = Field(default=None, max_length=2000)
+    due_date: Optional[str] = None  # YYYY-MM-DD
+
+
+@api.get("/pk-tasks/workers")
+def pk_task_workers(admin: dict = Depends(current_admin)):
+    """Assignable PartnerKart workers (active local_users) with their kitchen(s)."""
+    _require_pk_tasks(admin)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT u.id, u.name, u.phone, "
+                " GROUP_CONCAT(DISTINCT k.name ORDER BY k.name SEPARATOR ', ') AS kitchens "
+                "FROM pkdb.local_users u "
+                "LEFT JOIN pkdb.local_user_kitchens uk ON uk.user_id = u.id "
+                "LEFT JOIN pkdb.coco_kitchens k ON k.id = uk.kitchen_id "
+                "WHERE u.active = 1 "
+                "GROUP BY u.id, u.name, u.phone ORDER BY u.name"
+            )
+        ).mappings().all()
+    return {
+        "workers": [
+            {"id": r["id"], "name": (r["name"] or "").strip() or r["phone"],
+             "phone": r["phone"], "kitchens": r["kitchens"] or "—"}
+            for r in rows
+        ]
+    }
+
+
+@api.post("/pk-tasks/assign", status_code=201)
+def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
+    """Assign one task to many workers at once (bulk / combination)."""
+    _require_pk_tasks(admin)
+    due = None
+    if payload.due_date:
+        try:
+            due = datetime.fromisoformat(payload.due_date).date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Bad due date")
+    title = payload.title.strip()
+    details = (payload.details or "").strip() or None
+    who = admin.get("name") or admin["email"]
+    created = 0
+    with engine.begin() as conn:
+        # valid, active worker ids only
+        valid = {
+            r[0]
+            for r in conn.execute(
+                text("SELECT id FROM pkdb.local_users WHERE active = 1 AND id IN :ids")
+                .bindparams(bindparam("ids", expanding=True)),
+                {"ids": payload.worker_ids},
+            )
+        }
+        for wid in payload.worker_ids:
+            if wid not in valid:
+                continue
+            kid = conn.execute(
+                text("SELECT kitchen_id FROM pkdb.local_user_kitchens WHERE user_id = :u LIMIT 1"),
+                {"u": wid},
+            ).scalar()
+            conn.execute(
+                text(
+                    "INSERT INTO pkdb.pk_tasks "
+                    "(local_user_id, kitchen_id, title, details, status, due_date, "
+                    " assigned_by_email, assigned_by_name, created_at) "
+                    "VALUES (:u, :k, :t, :d, 'pending', :due, :ae, :an, NOW())"
+                ),
+                {"u": wid, "k": kid, "t": title, "d": details, "due": due,
+                 "ae": admin["email"], "an": who},
+            )
+            created += 1
+    emit_live_event(
+        who, "pk_tasks_assigned",
+        f"assigned a task to {created} kitchen worker{'s' if created != 1 else ''} · “{title[:60]}”",
+        {"module": "Tasks"},
+    )
+    return {"ok": True, "assigned": created}
+
+
+@api.get("/pk-tasks")
+def pk_tasks_list(
+    status: Optional[str] = Query(default=None),
+    admin: dict = Depends(current_admin),
+):
+    """Hema's reflection view: tasks she assigned, with live status from PK."""
+    _require_pk_tasks(admin)
+    where = "WHERE 1=1"
+    params: dict = {}
+    if not is_superadmin(admin["email"]):
+        where += " AND t.assigned_by_email = :me"
+        params["me"] = admin["email"]
+    if status in ("pending", "done", "cancelled"):
+        where += " AND t.status = :st"
+        params["st"] = status
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT t.id, t.title, t.details, t.status, t.due_date, "
+                " t.completion_note, t.completed_at, t.created_at, "
+                " u.name AS worker, u.phone, k.name AS kitchen "
+                "FROM pkdb.pk_tasks t "
+                "LEFT JOIN pkdb.local_users u ON u.id = t.local_user_id "
+                "LEFT JOIN pkdb.coco_kitchens k ON k.id = t.kitchen_id "
+                f"{where} ORDER BY t.created_at DESC LIMIT 300"
+            ),
+            params,
+        ).mappings().all()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"], "title": r["title"], "details": r["details"],
+            "status": r["status"],
+            "due_date": r["due_date"].isoformat() if r["due_date"] else None,
+            "completion_note": r["completion_note"],
+            "completed_at": _iso_utc(r["completed_at"]) if r["completed_at"] else None,
+            "created_at": _iso_utc(r["created_at"]) if r["created_at"] else None,
+            "worker": (r["worker"] or "").strip() or r["phone"],
+            "kitchen": r["kitchen"] or "—",
+        })
+    counts = {"pending": 0, "done": 0, "cancelled": 0}
+    for t in out:
+        counts[t["status"]] = counts.get(t["status"], 0) + 1
+    return {"tasks": out, "counts": counts}
+
+
+@api.patch("/pk-tasks/{task_id}")
+def pk_task_cancel(task_id: int, admin: dict = Depends(current_admin)):
+    """Cancel a still-pending task Hema assigned (won't touch done ones)."""
+    _require_pk_tasks(admin)
+    with engine.begin() as conn:
+        owner = conn.execute(
+            text("SELECT assigned_by_email FROM pkdb.pk_tasks WHERE id = :id"),
+            {"id": task_id},
+        ).scalar()
+        if owner is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        if not is_superadmin(admin["email"]) and _norm_email(owner) != _norm_email(admin["email"]):
+            raise HTTPException(status_code=403, detail="Not your task")
+        conn.execute(
+            text("UPDATE pkdb.pk_tasks SET status = 'cancelled' "
+                 "WHERE id = :id AND status = 'pending'"),
+            {"id": task_id},
+        )
+    return {"ok": True}
 
 
 @api.get("/leaderboard")
