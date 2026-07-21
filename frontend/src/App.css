@@ -3797,3 +3797,48 @@ button.link {
   padding: 8px 12px;
   background: #fff;
 }
+
+/* ---- Flag: mark-done state + remark ---- */
+.rf-item-done {
+  opacity: 0.72;
+}
+
+.rf-item-done .rf-ids {
+  text-decoration: line-through;
+  text-decoration-color: #9ca3af;
+}
+
+.rf-done-note {
+  font-size: 0.78rem;
+  color: #166534;
+  padding: 2px 0 0 2px;
+}
+
+.rf-done-note .rf-remark {
+  color: #854d0e;
+  font-style: italic;
+}
+
+.rf-undo-link {
+  color: var(--muted);
+}
+
+.rf-mark-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 2px;
+}
+
+.rf-mark-form input {
+  font-size: 0.82rem;
+  padding: 6px 10px;
+}
+
+.rf-done-confirm {
+  background: #16a34a;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}

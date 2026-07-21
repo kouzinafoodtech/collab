@@ -614,7 +614,7 @@ function Shell({ me, authFetch, logout }) {
         </div>
       )}
       {view === "redflags" && (
-        <RedFlags data={redflags} admins={admins} authFetch={authFetch} />
+        <RedFlags data={redflags} admins={admins} authFetch={authFetch} me={me} onReload={loadBoard} />
       )}
       {view === "programs" && (
         <Programs me={me} admins={admins} authFetch={authFetch} onOpenDept={openDept} />
@@ -939,27 +939,41 @@ function PersonPanel({ person, me, authFetch, onClose }) {
 
 // ---- Red flags -----------------------------------------------------------------
 
-function RedFlags({ data, admins, authFetch }) {
+function RedFlags({ data, admins, authFetch, me, onReload }) {
   const [open, setOpen] = useState(null); // expanded rule key
   const [flagging, setFlagging] = useState(null); // "rulekey-ref" per-item flag
   const [openKitchens, setOpenKitchens] = useState({}); // "rulekey::entity" -> bool
   const [openItems, setOpenItems] = useState({}); // "rulekey-ref" -> bool (drill-down)
   const [templates, setTemplates] = useState({});
   const [composing, setComposing] = useState(null); // rule being emailed
-  const [doneIds, setDoneIds] = useState(new Set()); // launch items marked done this session
+  // Optimistic overlay so the clicker sees the done state instantly; the real
+  // (shared) state arrives on the next poll / onReload.
+  const [localDone, setLocalDone] = useState({}); // fid -> {by, at, note} or false
+  const [marking, setMarking] = useState(null); // "rulekey-ref" being marked (remark open)
+  const [markNote, setMarkNote] = useState("");
 
   const toggleKitchen = (id) =>
     setOpenKitchens((cur) => ({ ...cur, [id]: !cur[id] }));
   const toggleItems = (id) =>
     setOpenItems((cur) => ({ ...cur, [id]: !cur[id] }));
 
-  async function markLaunchDone(ruleKey, f) {
+  async function setLaunchDone(ruleKey, f, done, note) {
     const fid = `${ruleKey}-${f.ref}`;
-    setDoneIds((cur) => new Set(cur).add(fid)); // optimistic — hide immediately
+    setLocalDone((cur) => ({
+      ...cur,
+      [fid]: done
+        ? { by: (me && me.name) || "you", at: new Date().toISOString(), note: note || null }
+        : false,
+    }));
+    setMarking(null);
+    setMarkNote("");
     await authFetch("/redflags/launch/done", {
       method: "POST",
-      body: JSON.stringify({ rule_key: ruleKey, ref: f.ref, ident: f.ident, done: true }),
+      body: JSON.stringify({
+        rule_key: ruleKey, ref: f.ref, ident: f.ident, done, note: note || null,
+      }),
     }).catch(() => {});
+    if (onReload) setTimeout(onReload, 500); // pull the real, shared state
   }
 
   useEffect(() => {
@@ -987,16 +1001,18 @@ function RedFlags({ data, admins, authFetch }) {
         const isOpen = open === rule.key;
         const renderItem = (f, showEntity) => {
           const fid = `${rule.key}-${f.ref}`;
-          if (doneIds.has(fid)) return null; // marked done this session — hidden
           const ids = [];
           if (f.order_id) ids.push(`#${f.order_id}`);
           if (f.po_number) ids.push(`PO ${f.po_number}`);
           if (f.so_id) ids.push(`SO ${f.so_id}`);
           if (f.ident) ids.push(f.ident);
           const itemsOpen = openItems[fid];
+          // done state merges server truth with the optimistic overlay
+          const ov = localDone[fid];
+          const done = ov === false ? false : ov || (f.done ? { by: f.done_by, at: f.done_at, note: f.done_note } : null);
           const soft = f.red === false; // shown for context, not a red flag
           return (
-            <div key={fid} className={`rf-item ${soft ? "rf-item-soft" : ""}`}>
+            <div key={fid} className={`rf-item ${done ? "rf-item-done" : soft ? "rf-item-soft" : ""}`}>
               <div className="rf-row">
                 {showEntity && <strong className="rf-entity">{f.entity}</strong>}
                 <span className="rf-ids">
@@ -1039,16 +1055,56 @@ function RedFlags({ data, admins, authFetch }) {
                 >
                   🚩 flag to…
                 </button>
-                {f.can_mark_done && (
+                {f.can_mark_done && !done && (
                   <button
                     className="rf-done-link"
-                    onClick={() => markLaunchDone(rule.key, f)}
-                    title="Mark this launch as done — it stops showing here"
+                    onClick={() => {
+                      setMarking(marking === fid ? null : fid);
+                      setMarkNote("");
+                    }}
+                    title="Mark this launch as done (with an optional remark)"
                   >
                     ✓ mark done
                   </button>
                 )}
+                {f.can_mark_done && done && (
+                  <button
+                    className="link rf-undo-link"
+                    onClick={() => setLaunchDone(rule.key, f, false)}
+                    title="Undo — bring it back to the flag"
+                  >
+                    undo
+                  </button>
+                )}
               </div>
+              {done && (
+                <div className="rf-done-note">
+                  ✓ done by <strong>{done.by || "—"}</strong>
+                  {done.at && ` · ${fmtDateTime(done.at)}`}
+                  {done.note && <span className="rf-remark"> · “{done.note}”</span>}
+                </div>
+              )}
+              {marking === fid && !done && (
+                <form
+                  className="rf-mark-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setLaunchDone(rule.key, f, true, markNote.trim() || null);
+                  }}
+                >
+                  <input
+                    className="grow"
+                    autoFocus
+                    placeholder="Optional remark (e.g. partially done)…"
+                    value={markNote}
+                    onChange={(e) => setMarkNote(e.target.value)}
+                  />
+                  <button type="submit" className="rf-done-confirm">✓ done</button>
+                  <button type="button" className="link" onClick={() => setMarking(null)}>
+                    cancel
+                  </button>
+                </form>
+              )}
               {itemsOpen && f.items?.length > 0 && (
                 <div className="rf-items">
                   {f.items.map((it, i) => (

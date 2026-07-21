@@ -153,6 +153,7 @@ class LaunchDoneRow(Base):
     ref = Column(Integer, nullable=False)
     ident = Column(String(255), nullable=True)   # kitchen name at time of marking
     marked_by = Column(String(255), nullable=True)
+    note = Column(String(500), nullable=True)    # optional remark, e.g. "partially done"
     marked_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -525,6 +526,13 @@ if IS_MYSQL:
         PK_TASKS_READY = True
     except Exception:
         PK_TASKS_READY = False  # no CREATE grant — PartnerKart team provisions it
+
+# launch_done.note (Sarmad's remark) — added after the table existed.
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text("ALTER TABLE launch_done ADD COLUMN note VARCHAR(500) NULL"))
+except Exception:
+    pass  # already present, or SQLite dev
 
 # Backfill: pre-existing programs inherit their owner's department (idempotent).
 try:
@@ -4042,18 +4050,19 @@ LAUNCH_OB_REMIND_DAYS = 10    # team reminds from day 10
 LAUNCH_OB_DEADLINE_DAYS = 15  # onboarding deadline: 15 days from Aggregator OB
 
 
-def _launch_dismissed_refs(rule_key: str) -> set:
-    """Refs a launch manager has manually marked done for this rule."""
+def _launch_done_map(rule_key: str) -> dict:
+    """ref -> {by, at} for launches manually marked done — kept visible with
+    attribution (not silently hidden) so everyone sees who closed it and when."""
     try:
         with SessionLocal() as db:
-            return {
-                r.ref
-                for r in db.query(LaunchDoneRow.ref).filter(
-                    LaunchDoneRow.rule_key == rule_key
-                )
-            }
+            rows = db.query(LaunchDoneRow).filter(LaunchDoneRow.rule_key == rule_key).all()
+        return {
+            r.ref: {"by": r.marked_by, "at": _iso_utc(r.marked_at) if r.marked_at else None,
+                    "note": r.note}
+            for r in rows
+        }
     except Exception:
-        return set()
+        return {}
 
 
 def _compute_launch_ob(conn, now: datetime) -> list[dict]:
@@ -4087,12 +4096,11 @@ def _compute_launch_ob(conn, now: datetime) -> list[dict]:
         ).mappings().all()
     except Exception:
         return []
-    dismissed = _launch_dismissed_refs("launch_ob")
+    done_map = _launch_done_map("launch_ob")
     out = []
     for r in rows:
-        if r["ref"] in dismissed:
-            continue  # manually marked done
         ds = int(r["days_since"] or 0)
+        d = done_map.get(r["ref"])
         out.append(
             {
                 "entity": r["manager"] or "Unassigned",
@@ -4104,12 +4112,19 @@ def _compute_launch_ob(conn, now: datetime) -> list[dict]:
                 "vendor": None,
                 "eta": r["deadline"],  # the 15-day deadline
                 "days_overdue": max(0, ds - LAUNCH_OB_DEADLINE_DAYS),
-                "red": ds >= LAUNCH_OB_DEADLINE_DAYS,
+                # a done launch is no longer red — but stays listed, marked done.
+                "red": ds >= LAUNCH_OB_DEADLINE_DAYS and not d,
                 "state": r["cur_status"] or "onboarding",
                 "ref": r["ref"],
                 "can_mark_done": True,
+                "done": bool(d),
+                "done_by": d["by"] if d else None,
+                "done_at": d["at"] if d else None,
+                "done_note": d.get("note") if d else None,
             }
         )
+    # done ones sink to the bottom of the group
+    out.sort(key=lambda f: (f["done"], -f["days_overdue"]))
     return out
 
 
@@ -4148,14 +4163,13 @@ def _compute_launch_rm(conn, now: datetime) -> list[dict]:
         rows = conn.execute(text(sql), {"confirm": LAUNCH_RM_CONFIRM_HRS}).mappings().all()
     except Exception:
         return []
-    dismissed = _launch_dismissed_refs("launch_rm")
+    done_map = _launch_done_map("launch_rm")
     out = []
     for r in rows:
-        if r["ref"] in dismissed:
-            continue  # manually marked done
         hrs = int(r["hrs"] or 0)
         confirmed = r["scheduled"] is not None
-        red = hrs >= LAUNCH_RM_CALL_HRS
+        d = done_map.get(r["ref"])
+        red = hrs >= LAUNCH_RM_CALL_HRS and not d
         state = "call not taken" if confirmed else "date/time not confirmed"
         out.append(
             {
@@ -4172,8 +4186,13 @@ def _compute_launch_rm(conn, now: datetime) -> list[dict]:
                 "state": state,
                 "ref": r["ref"],
                 "can_mark_done": True,
+                "done": bool(d),
+                "done_by": d["by"] if d else None,
+                "done_at": d["at"] if d else None,
+                "done_note": d.get("note") if d else None,
             }
         )
+    out.sort(key=lambda f: (f["done"], -f["days_overdue"]))
     return out
 
 
@@ -4314,6 +4333,10 @@ def _flag_json(f: dict) -> dict:
         "bill_url": f.get("bill_url"),
         "items": f.get("items"),
         "can_mark_done": f.get("can_mark_done", False),
+        "done": f.get("done", False),
+        "done_by": f.get("done_by"),
+        "done_at": f.get("done_at"),
+        "done_note": f.get("done_note"),
     }
 
 
@@ -4442,16 +4465,22 @@ def redflags(admin: dict = Depends(current_admin)):
              "days_overdue": 2, "ref": 90102,
              "items": [{"name": "GAS CYLINDER (19 KGS)", "ordered": 2, "received": 2, "amount": 1800}]},
         ]
-        launch_demo = [
-            f for f in [
-                {"entity": "Satyam", "contact_email": "", "ident": "RF-UP-LKO-ALIGANJ0-1",
-                 "eta": (now - timedelta(days=5)).date(), "days_overdue": 5, "red": True,
-                 "state": "WIP", "ref": 415, "can_mark_done": True},
-                {"entity": "Satyam", "contact_email": "", "ident": "RX-KA-BNG-RICHESGA-1",
-                 "eta": (now + timedelta(days=2)).date(), "days_overdue": 0, "red": False,
-                 "state": "onboarding", "ref": 421, "can_mark_done": True},
-            ] if f["ref"] not in _launch_dismissed_refs("launch_ob")
-        ]
+        _dm = _launch_done_map("launch_ob")
+        launch_demo = []
+        for f in [
+            {"entity": "Satyam", "contact_email": "", "ident": "RF-UP-LKO-ALIGANJ0-1",
+             "eta": (now - timedelta(days=5)).date(), "days_overdue": 5, "red": True,
+             "state": "WIP", "ref": 415, "can_mark_done": True},
+            {"entity": "Satyam", "contact_email": "", "ident": "RX-KA-BNG-RICHESGA-1",
+             "eta": (now + timedelta(days=2)).date(), "days_overdue": 0, "red": False,
+             "state": "onboarding", "ref": 421, "can_mark_done": True},
+        ]:
+            _d = _dm.get(f["ref"])
+            f.update({"done": bool(_d), "done_by": _d["by"] if _d else None,
+                      "done_at": _d["at"] if _d else None,
+                      "done_note": _d.get("note") if _d else None,
+                      "red": f["red"] and not _d})
+            launch_demo.append(f)
         rules_out = [
             _rule_out(REDFLAG_RULES[0], coco_demo),
             _rule_out(REDFLAG_RULES[1], partner_demo),
@@ -4475,37 +4504,46 @@ class LaunchDoneIn(BaseModel):
     ref: int
     ident: Optional[str] = None
     done: bool = True  # False = un-mark (bring it back)
+    note: Optional[str] = Field(default=None, max_length=500)  # remark, e.g. "partially done"
 
 
 @api.post("/redflags/launch/done")
 def mark_launch_done(payload: LaunchDoneIn, admin: dict = Depends(current_admin)):
-    """Mark a kitchen-launch flag as handled (or un-mark). Launch-only rules —
-    it drops off the flag immediately and is logged to the live feed."""
+    """Mark a kitchen-launch flag as handled (or un-mark), with an optional
+    remark. Launch-only rules — it leaves the red list (still shown, marked done
+    with who/when/remark for everyone) and is logged to the live feed."""
     if payload.rule_key not in ("launch_ob", "launch_rm"):
         raise HTTPException(status_code=400, detail="Only launch flags can be marked done")
     who = admin.get("name") or admin["email"]
+    note = (payload.note or "").strip() or None
     with SessionLocal() as db:
         existing = (
             db.query(LaunchDoneRow)
             .filter(LaunchDoneRow.rule_key == payload.rule_key, LaunchDoneRow.ref == payload.ref)
             .first()
         )
-        if payload.done and not existing:
-            db.add(
-                LaunchDoneRow(
-                    rule_key=payload.rule_key, ref=payload.ref,
-                    ident=(payload.ident or None), marked_by=admin["email"],
+        if payload.done:
+            if existing:  # update the marker (e.g. edited remark / re-marked)
+                existing.marked_by = who
+                existing.note = note
+                existing.ident = payload.ident or existing.ident
+            else:
+                db.add(
+                    LaunchDoneRow(
+                        rule_key=payload.rule_key, ref=payload.ref,
+                        ident=(payload.ident or None), marked_by=who, note=note,
+                    )
                 )
-            )
             db.commit()
-        elif not payload.done and existing:
+        elif existing:
             db.delete(existing)
             db.commit()
-    _redflag_cache["at"] = None  # force recompute so it disappears now
+    _redflag_cache["at"] = None  # force recompute so it updates now
     if payload.done:
         emit_live_event(
             who, "launch_marked_done",
-            f"marked launch done · {payload.ident or ('#' + str(payload.ref))}",
+            f"marked launch done · {payload.ident or ('#' + str(payload.ref))}"
+            + (f" · “{note}”" if note else ""),
             {"module": "Flags", "rule": payload.rule_key},
         )
     return {"ok": True, "done": payload.done}
