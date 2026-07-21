@@ -20,6 +20,18 @@ function fmtDate(d) {
   return dt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+// Absolute date + time, e.g. "21 Jul 2026, 4:30 PM" — for update attribution.
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso);
+  return `${d.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  })}, ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+}
+
 function etaLabel(eta) {
   if (!eta) return "no ETA";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(eta));
@@ -1639,7 +1651,9 @@ function Programs({ me, admins, authFetch, onOpenDept }) {
             <span className="pu-author" style={{ color: actorColor(u.author_name) }}>
               {u.author_name}
             </span>
-            <span className="pu-time">{timeAgo(u.created_at)} ago</span>
+            <span className="pu-time" title={fmtDateTime(u.created_at)}>
+              {fmtDateTime(u.created_at)}
+            </span>
           </div>
           {u.line && <div className="pu-line">“{u.line}”</div>}
           <div className="pu-people">
@@ -1835,7 +1849,7 @@ function ProgramCard({ p, me, admins, onPatch, onReload, authFetch }) {
           <span className="prog-last-dot" />
           <span className="prog-last-body">“{p.last_update.body}”</span>
           <span className="prog-last-meta">
-            {p.last_update.author_name} · {timeAgo(p.last_update.created_at)} ago
+            {p.last_update.author_name} · {fmtDateTime(p.last_update.created_at)}
           </span>
         </button>
       ) : (
@@ -2029,7 +2043,9 @@ function ProgramUpdates({ programId, authFetch, onPosted, admins = [] }) {
         <div key={u.id} className="comment">
           <strong style={{ color: actorColor(u.author_name) }}>{u.author_name}</strong>
           <span>{u.body}</span>
-          <span className="comment-time">{timeAgo(u.created_at)}</span>
+          <span className="comment-time" title={fmtDateTime(u.created_at)}>
+            {fmtDateTime(u.created_at)}
+          </span>
         </div>
       ))}
       {updates.length === 0 && <div className="empty">No updates yet.</div>}
