@@ -4455,9 +4455,28 @@ function OrgStructure({ structure, authFetch, onChanged, onPickDept }) {
 
   const keyOf = (r) => r.id || `new:${r.department}`;
 
+  async function downloadExcel() {
+    const res = await authFetch("/org/structure/export").catch(() => null);
+    if (!res || !res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "departments.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="card org-card">
-      <strong>🏛 Functions & Departments</strong>
+      <div className="org-card-head">
+        <strong>🏛 Functions & Departments</strong>
+        <button className="chip-toggle org-export" onClick={downloadExcel}>
+          ⬇ Excel
+        </button>
+      </div>
       <form className="prog-form-row org-add" onSubmit={add}>
         <input placeholder="Department" value={f.department}
           onChange={(e) => setF({ ...f, department: e.target.value })} />

@@ -3842,3 +3842,15 @@ button.link {
   font-size: 0.78rem;
   font-weight: 700;
 }
+
+/* ---- Departments export ---- */
+.org-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.org-export {
+  font-weight: 700;
+}

@@ -1700,13 +1700,10 @@ class OrgDeptIn(BaseModel):
     owner: Optional[str] = Field(default=None, max_length=255)
 
 
-@api.get("/org/structure")
-def org_structure(admin: dict = Depends(current_admin)):
+def _build_org_rows() -> list[dict]:
     """Org chart = UNION of curated structure rows and departments that exist
-    only on people's profiles (so a people-sheet department like "Partner
-    Relationship & Program Management" still shows, with function/owner
-    inferred from its members). Every row carries a member count. Readable by
-    all admins; editing is superadmin-only."""
+    only on people's profiles. Each row carries the member count AND the member
+    name list (used by the page and the Excel export)."""
     from collections import Counter, defaultdict
 
     with SessionLocal() as db:
@@ -1748,6 +1745,12 @@ def org_structure(admin: dict = Depends(current_admin)):
             base += 1
         return base
 
+    def _roster(key: str, owner: Optional[str]) -> list[str]:
+        names = sorted(names_by.get(key, []), key=str.lower)
+        if owner and not any(_owner_matches(owner, n) for n in names):
+            names = names + [owner]  # owner counts as a team member
+        return names
+
     out, seen = [], set()
     for r in rows:
         key = r.department.strip().lower()
@@ -1755,7 +1758,8 @@ def org_structure(admin: dict = Depends(current_admin)):
         out.append(
             {"id": r.id, "function": r.function, "department": r.department,
              "leader": r.leader, "owner": r.owner, "members": _count(key, r.owner),
-             "programs": prog_counts.get(key, 0)}
+             "programs": prog_counts.get(key, 0),
+             "member_list": _roster(key, r.owner)}
         )
     for key, cnt in counts.items():
         if key in seen:
@@ -1766,15 +1770,58 @@ def org_structure(admin: dict = Depends(current_admin)):
              "function": fn_by[key].most_common(1)[0][0] if fn_by[key] else None,
              "department": canonical[key], "leader": None,
              "owner": own, "members": _count(key, own),
-             "programs": prog_counts.get(key, 0)}
+             "programs": prog_counts.get(key, 0),
+             "member_list": _roster(key, own)}
         )
     out.sort(key=lambda r: r["department"].lower())
+    return out
+
+
+@api.get("/org/structure")
+def org_structure(admin: dict = Depends(current_admin)):
+    """Org chart, readable by all admins; editing is superadmin-only."""
+    out = _build_org_rows()
     return {
         "rows": out,
         "functions": sorted({r["function"] for r in out if r["function"]}),
         "departments": sorted({r["department"] for r in out}),
         "is_super": is_superadmin(admin["email"]),
     }
+
+
+@api.get("/org/structure/export")
+def org_structure_export(admin: dict = Depends(current_admin)):
+    """Download the departments table as an .xlsx."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    rows = _build_org_rows()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Departments"
+    headers = ["Department", "Function", "Lead", "Owner", "Members", "Programs", "Team"]
+    ws.append(headers)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for r in rows:
+        ws.append([
+            r["department"], r["function"] or "", r["leader"] or "—",
+            r["owner"] or "—", r["members"], r["programs"],
+            ", ".join(r.get("member_list") or []),
+        ])
+    widths = [34, 24, 16, 16, 10, 10, 60]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="departments.xlsx"'},
+    )
 
 
 @api.post("/org/structure", status_code=201)
