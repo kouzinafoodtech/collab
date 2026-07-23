@@ -1063,6 +1063,46 @@ with SessionLocal() as _db:
         _db.commit()
 
 
+# One-off: the "Cost Control" department (Lead: Sumit, Owner: Rohan / COGS
+# Controller) and its "Target 45" program. Idempotent — each part is created
+# only if it doesn't already exist, so it's safe on every startup.
+try:
+    with SessionLocal() as _db:
+        _cc = (
+            _db.query(OrgDeptRow)
+            .filter(func.lower(OrgDeptRow.department) == "cost control")
+            .first()
+        )
+        if not _cc:
+            _db.add(
+                OrgDeptRow(
+                    function="Corporate", department="Cost Control",
+                    leader="Sumit", owner="Rohan", active=1,
+                )
+            )
+        _has_t45 = (
+            _db.query(ProgramRow)
+            .filter(func.lower(ProgramRow.name) == "target 45")
+            .first()
+        )
+        if not _has_t45:
+            _db.add(
+                ProgramRow(
+                    name="Target 45",
+                    objective="COGS Control — recipe↔supplier links, consumption, "
+                    "PI, buy-to-plan, vendor & price hygiene",
+                    description="First deliverable: Pantry verified 8.7% → majority "
+                    "(273 matches queued); end-July count 30–31 Jul.",
+                    owner_email="rohan.r@kftpl.com", owner_name="Rohan",
+                    department="Cost Control", eta=datetime(2026, 7, 31),
+                    status="in_progress", created_by="seed:cost-control",
+                )
+            )
+        _db.commit()
+except Exception:
+    pass
+
+
 def _seed_dev_events(db):
     """Local dev (SQLite): fabricate a few events so the UI is testable."""
     if db.query(FeedEventRow).count() > 0:
