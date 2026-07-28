@@ -2855,6 +2855,11 @@ def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
                  "ae": admin["email"], "an": who, "att": att},
             )
             created += 1
+    if created == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="None of the selected managers are active — refresh and try again.",
+        )
     emit_live_event(
         who, "pk_tasks_assigned",
         f"assigned a task to {created} kitchen manager{'s' if created != 1 else ''} · “{title[:60]}”",

@@ -3115,6 +3115,8 @@ function TasksView({ me, admins, authFetch, onBack }) {
   const [pkPerson, setPkPerson] = useState(""); // stats filter: manager name or ""
   const [pkFile, setPkFile] = useState(null); // {url, filename}
   const [pkUploading, setPkUploading] = useState(false);
+  const [pkErr, setPkErr] = useState(""); // shown inside the compose modal
+  const [pkBusy, setPkBusy] = useState(false);
 
   const canTeam = me.is_super || (me.owns || []).length > 0;
   const canPk = !!me.pk_tasks_enabled;
@@ -3153,31 +3155,39 @@ function TasksView({ me, admins, authFetch, onBack }) {
 
   async function pkAssign(e) {
     e.preventDefault();
-    if (!pkSel.length || !pkForm.title.trim()) {
-      setStatus("Pick at least one manager and enter a task");
-      return;
+    setPkErr("");
+    if (!pkForm.title.trim()) return setPkErr("Enter a task title.");
+    if (!pkSel.length) return setPkErr("Tick at least one manager below.");
+    setPkBusy(true);
+    let res;
+    try {
+      res = await authFetch("/pk-tasks/assign", {
+        method: "POST",
+        body: JSON.stringify({
+          worker_ids: pkSel.map(Number),
+          title: pkForm.title.trim(),
+          details: pkForm.details || null,
+          due_date: pkForm.due_date || null,
+          attachment_url: pkFile?.url || null,
+        }),
+      });
+    } catch {
+      setPkBusy(false);
+      return setPkErr("Network error — please try again.");
     }
-    const res = await authFetch("/pk-tasks/assign", {
-      method: "POST",
-      body: JSON.stringify({
-        worker_ids: pkSel,
-        title: pkForm.title.trim(),
-        details: pkForm.details || null,
-        due_date: pkForm.due_date || null,
-        attachment_url: pkFile?.url || null,
-      }),
-    }).catch(() => null);
+    setPkBusy(false);
     if (res && res.ok) {
       const d = await res.json();
       setStatus(`Assigned to ${d.assigned} manager${d.assigned === 1 ? "" : "s"} ✓`);
       setPkSel([]);
       setPkForm({ title: "", details: "", due_date: "" });
       setPkFile(null);
+      setPkErr("");
       setPkCompose(false);
       loadPk();
     } else {
       const d = res ? await res.json().catch(() => ({})) : {};
-      setStatus(errText(d, "Could not assign"));
+      setPkErr(`${errText(d, "Could not assign")} (HTTP ${res ? res.status : "—"})`);
     }
   }
 
@@ -3461,7 +3471,7 @@ function TasksView({ me, admins, authFetch, onBack }) {
         {box === "kitchen" && canPk && (
           <>
             <div className="pk-topbar">
-              <button className="pk-assign-btn" onClick={() => setPkCompose(true)}>
+              <button className="pk-assign-btn" onClick={() => { setPkErr(""); setPkCompose(true); }}>
                 ✏️ Assign task
               </button>
               {(() => {
@@ -3592,11 +3602,11 @@ function TasksView({ me, admins, authFetch, onBack }) {
       )}
 
       {pkCompose && (
-        <div className="modal-backdrop" onClick={() => setPkCompose(false)}>
+        <div className="modal-backdrop" onClick={() => { setPkErr(""); setPkCompose(false); }}>
           <div className="modal compose-modal pk-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <strong>🍳 Assign task to kitchen managers</strong>
-              <button className="link" onClick={() => setPkCompose(false)}>✕</button>
+              <button className="link" onClick={() => { setPkErr(""); setPkCompose(false); }}>✕</button>
             </div>
             <form className="compose-form" onSubmit={pkAssign}>
               <input
@@ -3693,9 +3703,12 @@ function TasksView({ me, admins, authFetch, onBack }) {
                   <div className="empty">No managers available.</div>
                 )}
               </div>
-              <button type="submit" disabled={pkUploading}>
-                Assign to {pkSel.length || "…"} manager{pkSel.length === 1 ? "" : "s"}
+              <button type="submit" disabled={pkUploading || pkBusy}>
+                {pkBusy
+                  ? "Assigning…"
+                  : `Assign to ${pkSel.length} manager${pkSel.length === 1 ? "" : "s"}`}
               </button>
+              {pkErr && <p className="error pk-modal-err">{pkErr}</p>}
             </form>
           </div>
         </div>

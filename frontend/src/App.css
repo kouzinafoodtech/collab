@@ -3854,3 +3854,9 @@ button.link {
 .org-export {
   font-weight: 700;
 }
+
+.pk-modal-err {
+  margin: 8px 0 0;
+  text-align: center;
+  font-weight: 600;
+}
