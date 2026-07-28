@@ -2827,34 +2827,39 @@ def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
     att = (payload.attachment_url or "").strip() or None
     who = admin.get("name") or admin["email"]
     created = 0
-    with engine.begin() as conn:
-        # valid, active manager ids only
-        valid = {
-            r[0]
-            for r in conn.execute(
-                text("SELECT id FROM pkdb.local_users WHERE active = 1 AND id IN :ids")
-                .bindparams(bindparam("ids", expanding=True)),
-                {"ids": payload.worker_ids},
-            )
-        }
-        for wid in payload.worker_ids:
-            if wid not in valid:
-                continue
-            kid = conn.execute(
-                text("SELECT kitchen_id FROM pkdb.local_user_kitchens WHERE user_id = :u LIMIT 1"),
-                {"u": wid},
-            ).scalar()
-            conn.execute(
-                text(
-                    "INSERT INTO pkdb.pk_tasks "
-                    "(local_user_id, kitchen_id, title, details, status, due_date, "
-                    " assigned_by_email, assigned_by_name, attachment_url, created_at) "
-                    "VALUES (:u, :k, :t, :d, 'pending', :due, :ae, :an, :att, NOW())"
-                ),
-                {"u": wid, "k": kid, "t": title, "d": details, "due": due,
-                 "ae": admin["email"], "an": who, "att": att},
-            )
-            created += 1
+    try:
+        with engine.begin() as conn:
+            # valid, active manager ids only
+            valid = {
+                r[0]
+                for r in conn.execute(
+                    text("SELECT id FROM pkdb.local_users WHERE active = 1 AND id IN :ids")
+                    .bindparams(bindparam("ids", expanding=True)),
+                    {"ids": payload.worker_ids},
+                )
+            }
+            for wid in payload.worker_ids:
+                if wid not in valid:
+                    continue
+                kid = conn.execute(
+                    text("SELECT kitchen_id FROM pkdb.local_user_kitchens WHERE user_id = :u LIMIT 1"),
+                    {"u": wid},
+                ).scalar()
+                conn.execute(
+                    text(
+                        "INSERT INTO pkdb.pk_tasks "
+                        "(local_user_id, kitchen_id, title, details, status, due_date, "
+                        " assigned_by_email, assigned_by_name, attachment_url, created_at) "
+                        "VALUES (:u, :k, :t, :d, 'pending', :due, :ae, :an, :att, NOW())"
+                    ),
+                    {"u": wid, "k": kid, "t": title, "d": details, "due": due,
+                     "ae": admin["email"], "an": who, "att": att},
+                )
+                created += 1
+    except HTTPException:
+        raise
+    except Exception as e:  # surface the real DB error to the UI, not a blank 500
+        raise HTTPException(status_code=500, detail=f"Couldn't save the task: {str(e)[:180]}")
     if created == 0:
         raise HTTPException(
             status_code=400,
