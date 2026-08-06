@@ -4295,6 +4295,35 @@ def _compute_launch_rm(conn, now: datetime) -> list[dict]:
 
 LOCAL_EXP_APPROVAL_DAYS = 2  # pending this long → red
 
+# coco_kitchens.name is blank for some outlets; try other likely label columns.
+# Each is probed in its own try/except so a column that doesn't exist can't
+# break the flag — it just moves on to the next candidate.
+_KITCHEN_LABEL_COLS = ["name", "kac_name", "code", "kitchen_code", "outlet_code",
+                       "short_name", "display_name", "location", "city"]
+
+
+def _kitchen_label_map(conn, ids: set) -> dict:
+    """id -> best non-empty human label from coco_kitchens, across candidate cols."""
+    names: dict = {}
+    ids = {i for i in ids if i is not None}
+    for col in _KITCHEN_LABEL_COLS:
+        missing = [i for i in ids if not names.get(i)]
+        if not missing:
+            break
+        try:
+            rows = conn.execute(
+                text(f"SELECT id, `{col}` AS v FROM pkdb.coco_kitchens WHERE id IN :ids")
+                .bindparams(bindparam("ids", expanding=True)),
+                {"ids": missing},
+            ).all()
+        except Exception:
+            continue
+        for kid, v in rows:
+            s = str(v).strip() if v is not None else ""
+            if s and not names.get(kid):
+                names[kid] = s
+    return names
+
 
 def _compute_local_expense_approval(conn, now: datetime) -> list[dict]:
     """Local expenses (KPK / pkdb.local_expenses) still awaiting validation &
@@ -4315,11 +4344,14 @@ def _compute_local_expense_approval(conn, now: datetime) -> list[dict]:
         rows = conn.execute(text(sql)).mappings().all()
     except Exception:
         return []
+    # Fill labels for kitchens whose coco_kitchens.name was blank.
+    need = {r["kitchen_id"] for r in rows if not (r["kname"] or "").strip()}
+    extra = _kitchen_label_map(conn, need) if need else {}
     out = []
     for r in rows:
         dp = int(r["days_pending"] or 0)
-        kname = (r["kname"] or "").strip()
         kid = r["kitchen_id"]
+        kname = (r["kname"] or "").strip() or extra.get(kid, "")
         # Never blank: real kitchen name if we have it, else the kitchen id.
         entity = kname or (f"Kitchen #{kid}" if kid is not None else "Unknown kitchen")
         out.append(
