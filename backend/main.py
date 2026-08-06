@@ -4293,6 +4293,51 @@ def _compute_launch_rm(conn, now: datetime) -> list[dict]:
     return out
 
 
+LOCAL_EXP_APPROVAL_DAYS = 2  # pending this long → red
+
+
+def _compute_local_expense_approval(conn, now: datetime) -> list[dict]:
+    """Local expenses (KPK / pkdb.local_expenses) still awaiting validation &
+    approval, grouped by kitchen. Red once pending 2+ days. Reads pkdb — if the
+    app's DB user can't read the table the rule just returns empty (no crash)."""
+    sql = (
+        "SELECT e.id AS ref, "
+        "COALESCE(k.name, CONCAT('Kitchen #', e.kitchen_id)) AS kitchen, "
+        "e.category, e.amount, e.expense_date, "
+        "DATEDIFF(NOW(), e.expense_date) AS days_pending "
+        "FROM pkdb.local_expenses e "
+        "LEFT JOIN pkdb.coco_kitchens k ON k.id = e.kitchen_id "
+        "WHERE LOWER(TRIM(e.status)) = 'pending' AND e.deleted_at IS NULL "
+        "AND e.expense_date >= (NOW() - INTERVAL 120 DAY) "
+        "ORDER BY e.expense_date ASC LIMIT 1500"
+    )
+    try:
+        rows = conn.execute(text(sql)).mappings().all()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        dp = int(r["days_pending"] or 0)
+        out.append(
+            {
+                "entity": r["kitchen"] or "—",
+                "contact_email": "",
+                "po_number": None,
+                "order_id": None,
+                "so_id": None,
+                "ident": (r["category"] or "").strip() or "Expense",
+                "vendor": None,
+                "eta": r["expense_date"],
+                "days_overdue": dp,
+                "red": dp >= LOCAL_EXP_APPROVAL_DAYS,
+                "state": "pending approval",
+                "ref": r["ref"],
+                "amount": float(r["amount"] or 0),
+            }
+        )
+    return out
+
+
 REDFLAG_RULES = [
     {
         "key": "coco_grn",
@@ -4321,6 +4366,16 @@ REDFLAG_RULES = [
         "group_by_kitchen": True,
         "note": "Last 7 days: GRN pending (>2d) or received but no bill uploaded",
         "compute": _compute_delhi_grn,
+    },
+    {
+        "key": "local_expense_approval",
+        "label": "Local expenses — pending approval (KPK)",
+        "ref_label": "Expense",
+        "party_label": "Kitchen",
+        "group_by_kitchen": True,
+        "count_red_only": True,
+        "note": "KPK local expenses awaiting validation & approval. Red = pending 2+ days; grouped by kitchen.",
+        "compute": _compute_local_expense_approval,
     },
     {
         "key": "launch_ob",
@@ -4376,6 +4431,16 @@ DEFAULT_TEMPLATES = {
             "The following Delhi orders need attention — either the GRN is not "
             "done, or it is done but the bill has not been uploaded:\n\n{orders}\n\n"
             "Please complete the GRN and upload the bills by {due_date}.\n\n"
+            "— Kouzina Live"
+        ),
+    },
+    "local_expense_approval": {
+        "subject": "Local expenses pending validation & approval",
+        "body": (
+            "Team,\n\n"
+            "The following local expenses are pending validation & approval in "
+            "PartnerKart (KPK):\n\n{orders}\n\n"
+            "Please review and approve them by {due_date}.\n\n"
             "— Kouzina Live"
         ),
     },
@@ -4578,12 +4643,19 @@ def redflags(admin: dict = Depends(current_admin)):
                       "done_note": _d.get("note") if _d else None,
                       "red": f["red"] and not _d})
             launch_demo.append(f)
-        rules_out = [
-            _rule_out(REDFLAG_RULES[0], coco_demo),
-            _rule_out(REDFLAG_RULES[1], partner_demo),
-            _rule_out(REDFLAG_RULES[2], delhi_demo),
-            _rule_out(REDFLAG_RULES[3], launch_demo),
+        localexp_demo = [
+            {"entity": "AREKERE", "contact_email": "", "ident": "Delivery Charges",
+             "eta": (now - timedelta(days=9)).date(), "days_overdue": 9, "red": True,
+             "state": "pending approval", "ref": 90201, "amount": 156.0},
+            {"entity": "KLP HSR", "contact_email": "", "ident": "Raw Materials",
+             "eta": (now - timedelta(days=1)).date(), "days_overdue": 1, "red": False,
+             "state": "pending approval", "ref": 90202, "amount": 4200.0},
         ]
+        _demos = {
+            "coco_grn": coco_demo, "partner_grn": partner_demo, "delhi_grn": delhi_demo,
+            "local_expense_approval": localexp_demo, "launch_ob": launch_demo,
+        }
+        rules_out = [_rule_out(rule, _demos.get(rule["key"], [])) for rule in REDFLAG_RULES]
         total = sum(r["count"] for r in rules_out)
     data = {
         "total": total,
