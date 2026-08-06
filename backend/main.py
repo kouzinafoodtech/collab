@@ -4301,8 +4301,8 @@ def _compute_local_expense_approval(conn, now: datetime) -> list[dict]:
     approval, grouped by kitchen. Red once pending 2+ days. Reads pkdb — if the
     app's DB user can't read the table the rule just returns empty (no crash)."""
     sql = (
-        "SELECT e.id AS ref, "
-        "COALESCE(k.name, CONCAT('Kitchen #', e.kitchen_id)) AS kitchen, "
+        "SELECT e.id AS ref, e.kitchen_id, "
+        "NULLIF(TRIM(k.name), '') AS kname, k.email AS kemail, "
         "e.category, e.amount, e.expense_date, "
         "DATEDIFF(NOW(), e.expense_date) AS days_pending "
         "FROM pkdb.local_expenses e "
@@ -4318,10 +4318,14 @@ def _compute_local_expense_approval(conn, now: datetime) -> list[dict]:
     out = []
     for r in rows:
         dp = int(r["days_pending"] or 0)
+        kname = (r["kname"] or "").strip()
+        kid = r["kitchen_id"]
+        # Never blank: real kitchen name if we have it, else the kitchen id.
+        entity = kname or (f"Kitchen #{kid}" if kid is not None else "Unknown kitchen")
         out.append(
             {
-                "entity": r["kitchen"] or "—",
-                "contact_email": "",
+                "entity": entity,
+                "contact_email": (r["kemail"] or "").strip(),
                 "po_number": None,
                 "order_id": None,
                 "so_id": None,
