@@ -337,6 +337,32 @@ class OrgDeptRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+PK_TASKS_CAP = "pk_tasks"  # capability key: the Kitchen-manager tasks tab
+# Seeded into admin_capabilities on first run only; after that the table is the
+# single source of truth, so grants/revokes happen in the UI, not in code.
+PK_TASKS_SEED = {
+    "hemakumar.s@kftpl.com",  # Hema Kumar
+    "shashank.s@kftpl.com",   # Shashank S (ops)
+    "ali.m@kftpl.com",        # Ali (Operations / Control Tower)
+}
+
+
+class AdminCapabilityRow(Base):
+    """Per-person access to a gated KLU feature (currently 'pk_tasks' — the
+    Kitchen-manager tasks tab). Superadmins always have every capability; this
+    table is how they grant it to anyone else from the Users page, so adding a
+    person no longer needs a code change. KLU-owned on purpose: PartnerKart's
+    admins.allowed_modules governs PK's own modules and is rewritten by PK's
+    admin UI, so a KLU permission stored there could be silently dropped."""
+    __tablename__ = "admin_capabilities"
+    __table_args__ = (UniqueConstraint("email", "capability", name="uq_admin_capability"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False)
+    capability = Column(String(64), nullable=False)
+    granted_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 Base.metadata.create_all(engine)
 
 # Existing deployments created sender/recipient as VARCHAR(50); emails need more.
@@ -526,6 +552,24 @@ if IS_MYSQL:
         PK_TASKS_READY = True
     except Exception:
         PK_TASKS_READY = False  # no CREATE grant — PartnerKart team provisions it
+
+# Seed pk_tasks access once (Hema + Shashank, who had it in code, plus Ali who
+# was granted next). Runs only while the table is empty, so later revokes in the
+# UI are never undone by a redeploy.
+try:
+    with SessionLocal() as _db:
+        if _db.query(AdminCapabilityRow).filter(
+            AdminCapabilityRow.capability == PK_TASKS_CAP
+        ).count() == 0:
+            for _em in sorted(PK_TASKS_SEED):
+                _db.add(
+                    AdminCapabilityRow(
+                        email=_em, capability=PK_TASKS_CAP, granted_by="seed",
+                    )
+                )
+            _db.commit()
+except Exception:
+    pass
 
 # launch_done.note (Sarmad's remark) — added after the table existed.
 try:
@@ -1460,6 +1504,24 @@ def is_superadmin(email: str) -> bool:
     return False
 
 
+def _superadmin_emails() -> set:
+    """Active superadmins — they hold every capability implicitly."""
+    out = {SUPERADMIN_EMAIL.lower()}
+    if IS_MYSQL:
+        try:
+            with engine.connect() as conn:
+                out |= {
+                    (r[0] or "").lower()
+                    for r in conn.execute(
+                        text("SELECT email FROM pkdb.admins "
+                             "WHERE active = 1 AND is_super_admin = 1")
+                    )
+                }
+        except Exception:
+            pass
+    return {e for e in out if e}
+
+
 def require_superadmin(admin: dict = Depends(current_admin)) -> dict:
     if not is_superadmin(admin["email"]):
         raise HTTPException(status_code=403, detail="Superadmin only")
@@ -1862,6 +1924,86 @@ def org_structure_export(admin: dict = Depends(current_admin)):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="departments.xlsx"'},
     )
+
+
+class CapabilityIn(BaseModel):
+    email: str
+    capability: str = PK_TASKS_CAP
+
+
+@api.get("/capabilities")
+def capabilities_list(
+    capability: str = Query(default=PK_TASKS_CAP),
+    admin: dict = Depends(require_superadmin),
+):
+    """Who can use a gated feature. Superadmins have it implicitly and are
+    listed separately so it's clear why they aren't removable."""
+    with SessionLocal() as db:
+        rows = (
+            db.query(AdminCapabilityRow)
+            .filter(AdminCapabilityRow.capability == capability)
+            .all()
+        )
+        granted = [
+            {"id": r.id, "email": r.email, "granted_by": r.granted_by} for r in rows
+        ]
+    names = resolve_names({g["email"] for g in granted})
+    for g in granted:
+        g["name"] = names.get(g["email"], g["email"])
+    granted.sort(key=lambda g: g["name"].lower())
+    supers = sorted(_superadmin_emails())
+    super_names = resolve_names(set(supers))
+    return {
+        "capability": capability,
+        "granted": granted,
+        "superadmins": [
+            {"email": e, "name": super_names.get(e, e)} for e in supers
+        ],
+    }
+
+
+@api.post("/capabilities", status_code=201)
+def capability_grant(
+    payload: CapabilityIn, admin: dict = Depends(require_superadmin)
+):
+    email = _norm_email(payload.email)
+    if not is_active_admin(email):
+        raise HTTPException(status_code=400, detail="Must be an active admin")
+    with SessionLocal() as db:
+        exists = (
+            db.query(AdminCapabilityRow)
+            .filter(
+                AdminCapabilityRow.email == email,
+                AdminCapabilityRow.capability == payload.capability,
+            )
+            .first()
+        )
+        if not exists:
+            db.add(
+                AdminCapabilityRow(
+                    email=email, capability=payload.capability,
+                    granted_by=admin["email"],
+                )
+            )
+            db.commit()
+    who = admin.get("name") or admin["email"]
+    emit_live_event(
+        who, "capability_granted",
+        f"gave {resolve_names({email}).get(email, email)} access to kitchen-manager tasks",
+        {"module": "Users"},
+    )
+    return {"ok": True}
+
+
+@api.delete("/capabilities/{row_id}")
+def capability_revoke(row_id: int, admin: dict = Depends(require_superadmin)):
+    with SessionLocal() as db:
+        row = db.get(AdminCapabilityRow, row_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
+        db.delete(row)
+        db.commit()
+    return {"ok": True}
 
 
 @api.post("/org/structure", status_code=201)
@@ -2703,16 +2845,23 @@ async def import_task_tracker(
 
 # Who can assign & review kitchen-manager tasks (plus all superadmins). These
 # people all see every manager's tasks, not just the ones they assigned.
-PK_TASKS_ALLOWED = {
-    "hemakumar.s@kftpl.com",  # Hema Kumar
-    "shashank.s@kftpl.com",   # Shashank S (ops)
-}
+def _capability_emails(capability: str) -> set:
+    try:
+        with SessionLocal() as db:
+            return {
+                _norm_email(r[0])
+                for r in db.query(AdminCapabilityRow.email).filter(
+                    AdminCapabilityRow.capability == capability
+                )
+            }
+    except Exception:
+        return set()
 
 
 def _can_pk_tasks(admin: dict) -> bool:
     return (
         is_superadmin(admin["email"])
-        or _norm_email(admin["email"]) in PK_TASKS_ALLOWED
+        or _norm_email(admin["email"]) in _capability_emails(PK_TASKS_CAP)
     )
 
 

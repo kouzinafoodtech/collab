@@ -4149,6 +4149,7 @@ function UsersAdmin({ authFetch, me, onOpenDept }) {
   const [editing, setEditing] = useState(null); // email being edited
   const [status, setStatus] = useState("");
   const [showOrg, setShowOrg] = useState(false);
+  const [showAccess, setShowAccess] = useState(false);
 
   const load = useCallback(() => {
     authFetch("/org/users")
@@ -4212,9 +4213,18 @@ function UsersAdmin({ authFetch, me, onOpenDept }) {
         <button className="chip-toggle" onClick={() => setShowOrg(!showOrg)}>
           🏛 Departments ({structure.rows.length})
         </button>
+        {me.is_super && (
+          <button className="chip-toggle" onClick={() => setShowAccess(!showAccess)}>
+            🔑 Feature access
+          </button>
+        )}
       </div>
 
       {status && <div className="users-status">{status}</div>}
+
+      {showAccess && me.is_super && (
+        <AccessPanel authFetch={authFetch} users={users} />
+      )}
 
       {showOrg && (
         <OrgStructure
@@ -4419,6 +4429,95 @@ function EditUserForm({ user, structure, onSave, onCancel }) {
         <button type="button" className="link" onClick={onCancel}>cancel</button>
       </div>
     </form>
+  );
+}
+
+// Superadmin-only: who can use gated features (currently the Kitchen-manager
+// tasks tab). Grants live in KLU so no code change / deploy is needed.
+function AccessPanel({ authFetch, users }) {
+  const [data, setData] = useState({ granted: [], superadmins: [] });
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    authFetch("/capabilities?capability=pk_tasks")
+      .then((r) => (r.ok ? r.json() : { granted: [], superadmins: [] }))
+      .then(setData)
+      .catch(() => {});
+  }, [authFetch]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function grant(e) {
+    e.preventDefault();
+    if (!pick) return;
+    setBusy(true);
+    await authFetch("/capabilities", {
+      method: "POST",
+      body: JSON.stringify({ email: pick, capability: "pk_tasks" }),
+    }).catch(() => {});
+    setBusy(false);
+    setPick("");
+    load();
+  }
+
+  async function revoke(id, name) {
+    if (!window.confirm(`Remove ${name}'s access to kitchen-manager tasks?`)) return;
+    await authFetch(`/capabilities/${id}`, { method: "DELETE" }).catch(() => {});
+    load();
+  }
+
+  const has = new Set(data.granted.map((g) => (g.email || "").toLowerCase()));
+  const supers = new Set(data.superadmins.map((s) => (s.email || "").toLowerCase()));
+  const options = (users || []).filter(
+    (u) => !has.has((u.email || "").toLowerCase()) && !supers.has((u.email || "").toLowerCase())
+  );
+
+  return (
+    <div className="card org-card">
+      <div className="org-card-head">
+        <strong>🔑 Kitchen-manager tasks — who can assign &amp; review</strong>
+      </div>
+      <div className="muted pk-note">
+        These people see the 🍳 Kitchen managers tab and can assign, review and
+        cancel tasks for every manager. Superadmins always have access.
+      </div>
+      <form className="prog-form-row org-add" onSubmit={grant}>
+        <select value={pick} onChange={(e) => setPick(e.target.value)}>
+          <option value="">Add a person…</option>
+          {options.map((u) => (
+            <option key={u.email} value={u.email}>
+              {u.name || u.email}
+              {u.department ? ` — ${u.department}` : ""}
+            </option>
+          ))}
+        </select>
+        <button type="submit" disabled={!pick || busy}>
+          {busy ? "Adding…" : "Give access"}
+        </button>
+      </form>
+      <div className="org-rows">
+        {data.granted.map((g) => (
+          <div key={g.id} className="org-row">
+            <span className="org-dept">{g.name}</span>
+            <span className="muted org-meta">{g.email}</span>
+            <button className="link" onClick={() => revoke(g.id, g.name)}>
+              remove
+            </button>
+          </div>
+        ))}
+        {data.granted.length === 0 && (
+          <div className="empty">Only superadmins have access.</div>
+        )}
+        {data.superadmins.map((s) => (
+          <div key={s.email} className="org-row">
+            <span className="org-dept">{s.name}</span>
+            <span className="muted org-meta">{s.email}</span>
+            <span className="muted">superadmin</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
