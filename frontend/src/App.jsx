@@ -3263,6 +3263,65 @@ function TasksView({ me, admins, authFetch, onBack }) {
     if (showTemplates) loadTemplates();
   }, [showTemplates, loadTemplates]);
 
+  // Editing a recurring task: retitle it, or hand it to someone else.
+  const [tplPeople, setTplPeople] = useState([]);
+  const [editTpl, setEditTpl] = useState(null);
+  const [tplForm, setTplForm] = useState({});
+  const [tplBusy, setTplBusy] = useState(false);
+
+  useEffect(() => {
+    const d = teamDept || team?.department;
+    if (!showTemplates || !d) return;
+    authFetch(`/org/team?department=${encodeURIComponent(d)}`)
+      .then((r) => (r.ok ? r.json() : { members: [] }))
+      .then((x) => setTplPeople((x.members || []).filter((m) => m.email)))
+      .catch(() => setTplPeople([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTemplates, teamDept, team?.department]);
+
+  function startEditTpl(tp) {
+    setEditTpl(tp.id);
+    setTplForm({
+      title: tp.title || "",
+      assignee_email: tp.assignee_email || "",
+      frequency: tp.frequency || "monthly",
+      cutoff_day: tp.cutoff_day == null ? "" : String(tp.cutoff_day),
+    });
+  }
+
+  async function saveTpl(tp) {
+    if (!(tplForm.title || "").trim() || !tplForm.assignee_email) {
+      setStatus("Task name and owner are both needed");
+      return;
+    }
+    setTplBusy(true);
+    const res = await authFetch(`/tasks/templates/${tp.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        // PATCH replaces every field — carry through the ones not edited here
+        // so they aren't wiped.
+        company: tp.company || null,
+        support_by: tp.support_by || null,
+        due_months: tp.due_months || null,
+        notes: tp.notes || null,
+        title: tplForm.title.trim(),
+        assignee_email: tplForm.assignee_email,
+        frequency: tplForm.frequency,
+        cutoff_day: tplForm.cutoff_day === "" ? null : Number(tplForm.cutoff_day),
+      }),
+    }).catch(() => null);
+    setTplBusy(false);
+    if (res && res.ok) {
+      setEditTpl(null);
+      setStatus("Recurring task updated ✓");
+      loadTemplates();
+      loadTeam();
+    } else {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      setStatus(errText(d, "Couldn't save the recurring task"));
+    }
+  }
+
   async function patchTask(id, body) {
     const res = await authFetch(`/tasks/${id}`, {
       method: "PATCH",
@@ -3426,15 +3485,80 @@ function TasksView({ me, admins, authFetch, onBack }) {
             )}
             {showTemplates && (
               <div className="card org-card">
-                <strong>🔁 Recurring tasks</strong>
+                <div className="org-card-head">
+                  <strong>🔁 Recurring tasks</strong>
+                  <span className="muted">Rename a task, or hand it to someone else.</span>
+                </div>
                 <div className="org-rows">
-                  {templates.map((tp) => (
+                  {templates.map((tp) =>
+                    editTpl === tp.id ? (
+                      <form
+                        key={tp.id}
+                        className="prog-form-row tpl-edit"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          saveTpl(tp);
+                        }}
+                      >
+                        <input
+                          className="grow"
+                          autoFocus
+                          placeholder="Task name"
+                          value={tplForm.title}
+                          onChange={(e) => setTplForm({ ...tplForm, title: e.target.value })}
+                        />
+                        <select
+                          value={tplForm.assignee_email}
+                          onChange={(e) =>
+                            setTplForm({ ...tplForm, assignee_email: e.target.value })
+                          }
+                        >
+                          {/* keep the current owner selectable even if they're
+                              not in the department roster any more */}
+                          {(tplPeople.some((m) => m.email === tplForm.assignee_email)
+                            ? tplPeople
+                            : [{ email: tplForm.assignee_email, name: tp.assignee_name }, ...tplPeople]
+                          ).map((m) => (
+                            <option key={m.email} value={m.email}>
+                              {m.name || m.email}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={tplForm.frequency}
+                          onChange={(e) => setTplForm({ ...tplForm, frequency: e.target.value })}
+                        >
+                          {["daily", "weekly", "monthly", "quarterly", "half_yearly",
+                            "yearly", "need_basis"].map((f) => (
+                            <option key={f} value={f}>{f.replace("_", " ")}</option>
+                          ))}
+                        </select>
+                        <input
+                          className="tpl-day"
+                          type="number"
+                          min="1"
+                          max="31"
+                          placeholder="day"
+                          value={tplForm.cutoff_day}
+                          onChange={(e) => setTplForm({ ...tplForm, cutoff_day: e.target.value })}
+                        />
+                        <button type="submit" disabled={tplBusy}>
+                          {tplBusy ? "Saving…" : "Save"}
+                        </button>
+                        <button type="button" className="link" onClick={() => setEditTpl(null)}>
+                          cancel
+                        </button>
+                      </form>
+                    ) : (
                     <div key={tp.id} className="org-row">
                       <span className="org-dept">{tp.title}</span>
                       <span className="muted">{tp.assignee_name}</span>
                       <span className="muted">{(tp.frequency || "").replace("_", " ")}</span>
                       <span className="muted">{tp.cutoff_day ? `day ${tp.cutoff_day}` : "—"}</span>
                       <span className="org-actions">
+                        <button className="link" onClick={() => startEditTpl(tp)}>
+                          edit
+                        </button>
                         <button
                           className="link"
                           onClick={async () => {
@@ -3448,7 +3572,8 @@ function TasksView({ me, admins, authFetch, onBack }) {
                         </button>
                       </span>
                     </div>
-                  ))}
+                    )
+                  )}
                   {templates.length === 0 && <div className="empty">No recurring tasks.</div>}
                 </div>
               </div>

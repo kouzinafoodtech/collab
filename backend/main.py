@@ -2681,8 +2681,34 @@ def edit_task_template(
         row.cutoff_day = payload.cutoff_day
         row.due_months = (payload.due_months or "").strip() or None
         row.notes = (payload.notes or "").strip() or None
+        db.flush()
+
+        # Instances are materialised once per month, so editing the template
+        # alone would leave the task the person is actually looking at under
+        # the old name/owner. Bring every still-open instance in step; leave
+        # completed ones as the historical record of who did the work.
+        import calendar as _cal
+        open_rows = (
+            db.query(TaskRow)
+            .filter(TaskRow.template_id == template_id, TaskRow.status != "completed")
+            .all()
+        )
+        for inst in open_rows:
+            inst.title = row.title
+            inst.assignee_email = row.assignee_email
+            inst.company = row.company
+            inst.support_by = row.support_by
+            inst.frequency = row.frequency
+            if row.cutoff_day and inst.period and "-" in str(inst.period):
+                try:
+                    y, m = (int(x) for x in str(inst.period).split("-")[:2])
+                    last = _cal.monthrange(y, m)[1]
+                    inst.cutoff_date = datetime(y, m, min(int(row.cutoff_day), last))
+                except (ValueError, TypeError):
+                    pass
         db.commit()
-    return {"ok": True}
+        moved = len(open_rows)
+    return {"ok": True, "updated_open": moved}
 
 
 @api.delete("/tasks/templates/{template_id}")

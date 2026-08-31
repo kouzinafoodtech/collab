@@ -3860,3 +3860,21 @@ button.link {
   text-align: center;
   font-weight: 600;
 }
+
+/* ---- Recurring task inline edit ---- */
+.tpl-edit {
+  gap: 8px;
+  align-items: center;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.tpl-edit .grow {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.tpl-edit .tpl-day {
+  width: 84px;
+}
