@@ -3109,7 +3109,10 @@ function TasksView({ me, admins, authFetch, onBack }) {
   const [pkWorkers, setPkWorkers] = useState([]);
   const [pkTasks, setPkTasks] = useState({ tasks: [], counts: {} });
   const [pkSel, setPkSel] = useState([]); // selected manager ids (compose)
-  const [pkForm, setPkForm] = useState({ title: "", details: "", due_date: "" });
+  const [pkForm, setPkForm] = useState({
+    title: "", details: "", due_date: "", repeat: "once",
+  });
+  const [pkTpls, setPkTpls] = useState([]); // recurring kitchen-manager tasks
   const [pkFilter, setPkFilter] = useState(""); // manager filter in compose picker
   const [pkCompose, setPkCompose] = useState(false); // assign modal open
   const [pkPerson, setPkPerson] = useState(""); // stats filter: manager name or ""
@@ -3130,6 +3133,10 @@ function TasksView({ me, admins, authFetch, onBack }) {
     authFetch("/pk-tasks")
       .then((r) => (r.ok ? r.json() : { tasks: [], counts: {} }))
       .then((d) => setPkTasks(d.tasks ? d : { tasks: [], counts: {} }))
+      .catch(() => {});
+    authFetch("/pk-tasks/templates")
+      .then((r) => (r.ok ? r.json() : { templates: [] }))
+      .then((d) => setPkTpls(d.templates || []))
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canPk]);
@@ -3169,6 +3176,11 @@ function TasksView({ me, admins, authFetch, onBack }) {
           details: pkForm.details || null,
           due_date: pkForm.due_date || null,
           attachment_url: pkFile?.url || null,
+          repeat: pkForm.repeat || "once",
+          weekday:
+            pkForm.repeat === "weekly" && pkForm.weekday != null
+              ? Number(pkForm.weekday)
+              : null,
         }),
       });
     } catch {
@@ -3178,9 +3190,12 @@ function TasksView({ me, admins, authFetch, onBack }) {
     setPkBusy(false);
     if (res && res.ok) {
       const d = await res.json();
-      setStatus(`Assigned to ${d.assigned} manager${d.assigned === 1 ? "" : "s"} ✓`);
+      const rep = d.repeat && d.repeat !== "once"
+        ? ` · repeats ${d.repeat === "daily" ? "daily" : "weekly"}`
+        : "";
+      setStatus(`Assigned to ${d.assigned} manager${d.assigned === 1 ? "" : "s"}${rep} ✓`);
       setPkSel([]);
-      setPkForm({ title: "", details: "", due_date: "" });
+      setPkForm({ title: "", details: "", due_date: "", repeat: "once" });
       setPkFile(null);
       setPkErr("");
       setPkCompose(false);
@@ -3613,6 +3628,48 @@ function TasksView({ me, admins, authFetch, onBack }) {
               })()}
             </div>
 
+            {pkTpls.length > 0 && (
+              <div className="card pk-recurring">
+                <div className="org-card-head">
+                  <strong>🔁 Recurring kitchen tasks</strong>
+                  <span className="muted">
+                    These create themselves — no need to re-assign.
+                  </span>
+                </div>
+                <div className="org-rows">
+                  {pkTpls.map((t) => (
+                    <div key={t.id} className="org-row">
+                      <span className="org-dept">{t.title}</span>
+                      <span className="muted">
+                        {t.frequency === "weekly"
+                          ? `every ${t.weekday_name || "week"}`
+                          : "every day"}
+                      </span>
+                      <span className="muted pk-tpl-who">
+                        {t.managers.length} manager{t.managers.length === 1 ? "" : "s"}
+                        {t.managers.length ? ` · ${t.managers.slice(0, 3).join(", ")}` : ""}
+                        {t.managers.length > 3 ? ` +${t.managers.length - 3}` : ""}
+                      </span>
+                      <span className="org-actions">
+                        <button
+                          className="link"
+                          onClick={async () => {
+                            if (!window.confirm(`Stop repeating “${t.title}”?`)) return;
+                            await authFetch(`/pk-tasks/templates/${t.id}`, {
+                              method: "DELETE",
+                            }).catch(() => {});
+                            loadPk();
+                          }}
+                        >
+                          stop
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="pk-filter-row">
               <span className="compose-lbl">Manager</span>
               <select value={pkPerson} onChange={(e) => setPkPerson(e.target.value)}>
@@ -3748,11 +3805,39 @@ function TasksView({ me, admins, authFetch, onBack }) {
               />
               <div className="compose-grid">
                 <label className="compose-field">
-                  <span className="compose-lbl">Due date</span>
+                  <span className="compose-lbl">Repeat</span>
+                  <select
+                    value={pkForm.repeat || "once"}
+                    onChange={(e) => setPkForm({ ...pkForm, repeat: e.target.value })}
+                  >
+                    <option value="once">One-time</option>
+                    <option value="daily">Every day</option>
+                    <option value="weekly">Every week</option>
+                  </select>
+                </label>
+                {pkForm.repeat === "weekly" && (
+                  <label className="compose-field">
+                    <span className="compose-lbl">On</span>
+                    <select
+                      value={pkForm.weekday ?? String(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1)}
+                      onChange={(e) => setPkForm({ ...pkForm, weekday: e.target.value })}
+                    >
+                      {["Monday", "Tuesday", "Wednesday", "Thursday",
+                        "Friday", "Saturday", "Sunday"].map((d, i) => (
+                        <option key={d} value={String(i)}>{d}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label className="compose-field">
+                  <span className="compose-lbl">
+                    {(pkForm.repeat || "once") === "once" ? "Due date" : "First due date"}
+                  </span>
                   <input
                     type="date"
                     value={pkForm.due_date}
                     onChange={(e) => setPkForm({ ...pkForm, due_date: e.target.value })}
+                    disabled={(pkForm.repeat || "once") !== "once"}
                   />
                 </label>
                 <label className="compose-field">
@@ -3778,6 +3863,14 @@ function TasksView({ me, admins, authFetch, onBack }) {
                 </label>
               </div>
 
+              {(pkForm.repeat || "once") !== "once" && (
+                <div className="muted pk-note">
+                  A fresh task is created for these managers{" "}
+                  {pkForm.repeat === "daily" ? "every day" : "every week"} — due the
+                  day it appears{pkForm.repeat === "weekly" ? " (that week)" : ""}.
+                  Stop it any time from the Recurring list.
+                </div>
+              )}
               <div className="pk-worker-head">
                 <input
                   className="pk-worker-filter"

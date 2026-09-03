@@ -363,6 +363,27 @@ class AdminCapabilityRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class PkTaskTemplateRow(Base):
+    """A recurring kitchen-manager task. Kept in KLU's own DB (not pkdb) —
+    KLU owns task creation per the PartnerKart contract, and pkdb's schema is
+    shared with their team. Instances are materialised into pkdb.pk_tasks."""
+    __tablename__ = "pk_task_templates"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(500), nullable=False)
+    details = Column(Text, nullable=True)
+    attachment_url = Column(String(500), nullable=True)
+    worker_ids = Column(String(2000), nullable=False)   # csv of local_users.id
+    frequency = Column(String(16), nullable=False, default="daily")  # daily|weekly
+    weekday = Column(Integer, nullable=True)            # 0=Mon..6=Sun (weekly)
+    active = Column(Integer, nullable=False, default=1)
+    created_by_email = Column(String(255), nullable=True)
+    created_by_name = Column(String(255), nullable=True)
+    # last period already spawned ("YYYY-MM-DD" daily, "YYYY-Www" weekly).
+    # Claimed with a conditional UPDATE so two replicas can't double-spawn.
+    last_period = Column(String(16), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 Base.metadata.create_all(engine)
 
 # Existing deployments created sender/recipient as VARCHAR(50); emails need more.
@@ -2907,6 +2928,8 @@ class PkAssignIn(BaseModel):
     details: Optional[str] = Field(default=None, max_length=2000)
     due_date: Optional[str] = None  # YYYY-MM-DD
     attachment_url: Optional[str] = Field(default=None, max_length=500)
+    repeat: str = Field(default="once")       # once | daily | weekly
+    weekday: Optional[int] = Field(default=None, ge=0, le=6)  # 0=Mon (weekly)
 
 
 @api.get("/pk-tasks/workers")
@@ -2987,6 +3010,110 @@ def pk_task_file(token: str):
     )
 
 
+def _pk_period(freq: str, day) -> str:
+    """Period key for a spawn — one instance per day (daily) or per ISO week."""
+    if freq == "weekly":
+        iso = day.isocalendar()
+        return f"{iso[0]}-W{int(iso[1]):02d}"
+    return day.isoformat()
+
+
+def _pk_spawn(conn, tpl_title, details, att, worker_ids, due, by_email, by_name) -> int:
+    """Insert one pk_task per still-active manager. Returns how many landed."""
+    if not worker_ids:
+        return 0
+    valid = {
+        r[0]
+        for r in conn.execute(
+            text("SELECT id FROM pkdb.local_users WHERE active = 1 AND id IN :ids")
+            .bindparams(bindparam("ids", expanding=True)),
+            {"ids": worker_ids},
+        )
+    }
+    made = 0
+    for wid in worker_ids:
+        if wid not in valid:
+            continue
+        kid = conn.execute(
+            text("SELECT kitchen_id FROM pkdb.local_user_kitchens WHERE user_id = :u LIMIT 1"),
+            {"u": wid},
+        ).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO pkdb.pk_tasks "
+                "(local_user_id, kitchen_id, title, details, status, due_date, "
+                " assigned_by_email, assigned_by_name, attachment_url, created_at) "
+                "VALUES (:u, :k, :t, :d, 'pending', :due, :ae, :an, :att, NOW())"
+            ),
+            {"u": wid, "k": kid, "t": tpl_title, "d": details, "due": due,
+             "ae": by_email, "an": by_name, "att": att},
+        )
+        made += 1
+    return made
+
+
+_pk_ensured_at = None  # throttle: this runs off hot polls
+
+
+def ensure_pk_task_instances(now: datetime, force: bool = False):
+    """Materialise today's / this week's recurring kitchen-manager tasks.
+    There is no scheduler in this app, so this is driven off requests — but it
+    is throttled, and each period is claimed with a conditional UPDATE so the
+    replicas can't both spawn the same day's tasks."""
+    global _pk_ensured_at
+    if not PK_TASKS_READY:
+        return
+    if not force and _pk_ensured_at and (now - _pk_ensured_at).total_seconds() < 300:
+        return
+    _pk_ensured_at = now
+    today = now.date()
+    try:
+        with SessionLocal() as db:
+            tpls = (
+                db.query(PkTaskTemplateRow)
+                .filter(PkTaskTemplateRow.active == 1)
+                .all()
+            )
+            due_now = []
+            for t in tpls:
+                if t.frequency == "weekly" and t.weekday is not None:
+                    if today.weekday() != int(t.weekday):
+                        continue
+                period = _pk_period(t.frequency, today)
+                if t.last_period == period:
+                    continue
+                # claim the period atomically — the loser skips it
+                claimed = (
+                    db.query(PkTaskTemplateRow)
+                    .filter(
+                        PkTaskTemplateRow.id == t.id,
+                        or_(
+                            PkTaskTemplateRow.last_period.is_(None),
+                            PkTaskTemplateRow.last_period != period,
+                        ),
+                    )
+                    .update({PkTaskTemplateRow.last_period: period},
+                            synchronize_session=False)
+                )
+                db.commit()
+                if claimed:
+                    due_now.append(
+                        {
+                            "title": t.title, "details": t.details,
+                            "att": t.attachment_url,
+                            "ids": [int(x) for x in (t.worker_ids or "").split(",") if x.strip()],
+                            "due": today + timedelta(days=6) if t.frequency == "weekly" else today,
+                            "email": t.created_by_email, "name": t.created_by_name,
+                        }
+                    )
+        for job in due_now:
+            with engine.begin() as conn:
+                _pk_spawn(conn, job["title"], job["details"], job["att"],
+                          job["ids"], job["due"], job["email"], job["name"])
+    except Exception:
+        pass  # never break a page load over this
+
+
 @api.post("/pk-tasks/assign", status_code=201)
 def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
     """Assign one task to many managers at once (bulk / combination)."""
@@ -3040,12 +3167,96 @@ def pk_task_assign(payload: PkAssignIn, admin: dict = Depends(current_admin)):
             status_code=400,
             detail="None of the selected managers are active — refresh and try again.",
         )
+    repeat = (payload.repeat or "once").strip().lower()
+    if repeat not in ("once", "daily", "weekly"):
+        repeat = "once"
+    if repeat != "once":
+        # This assign becomes the first instance; the template drives the rest.
+        today = datetime.now(timezone.utc).replace(tzinfo=None).date()
+        with SessionLocal() as db:
+            db.add(
+                PkTaskTemplateRow(
+                    title=title, details=details, attachment_url=att,
+                    worker_ids=",".join(str(w) for w in payload.worker_ids),
+                    frequency=repeat,
+                    weekday=(payload.weekday if repeat == "weekly"
+                             else None) if payload.weekday is not None
+                    else (today.weekday() if repeat == "weekly" else None),
+                    created_by_email=admin["email"], created_by_name=who,
+                    last_period=_pk_period(repeat, today), active=1,
+                )
+            )
+            db.commit()
     emit_live_event(
         who, "pk_tasks_assigned",
-        f"assigned a task to {created} kitchen manager{'s' if created != 1 else ''} · “{title[:60]}”",
+        f"assigned a{' recurring' if repeat != 'once' else ''} task to {created} "
+        f"kitchen manager{'s' if created != 1 else ''} · “{title[:60]}”",
         {"module": "Tasks"},
     )
-    return {"ok": True, "assigned": created}
+    return {"ok": True, "assigned": created, "repeat": repeat}
+
+
+@api.get("/pk-tasks/templates")
+def pk_task_templates(admin: dict = Depends(current_admin)):
+    """Recurring kitchen-manager tasks (the ones that respawn on their own)."""
+    _require_pk_tasks(admin)
+    with SessionLocal() as db:
+        rows = (
+            db.query(PkTaskTemplateRow)
+            .filter(PkTaskTemplateRow.active == 1)
+            .order_by(PkTaskTemplateRow.id.desc())
+            .all()
+        )
+    ids = sorted({int(x) for r in rows for x in (r.worker_ids or "").split(",") if x.strip()})
+    names = {}
+    if ids:
+        try:
+            with engine.connect() as conn:
+                names = {
+                    r[0]: (r[1] or "").strip() or r[2]
+                    for r in conn.execute(
+                        text("SELECT id, name, phone FROM pkdb.local_users WHERE id IN :ids")
+                        .bindparams(bindparam("ids", expanding=True)),
+                        {"ids": ids},
+                    )
+                }
+        except Exception:
+            names = {}
+    days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return {
+        "templates": [
+            {
+                "id": r.id, "title": r.title, "frequency": r.frequency,
+                "weekday": r.weekday,
+                "weekday_name": days[int(r.weekday)] if r.weekday is not None else None,
+                "created_by": r.created_by_name,
+                "last_period": r.last_period,
+                "managers": [
+                    names.get(int(x), f"#{x}")
+                    for x in (r.worker_ids or "").split(",") if x.strip()
+                ],
+            }
+            for r in rows
+        ]
+    }
+
+
+@api.delete("/pk-tasks/templates/{template_id}")
+def pk_task_template_stop(template_id: int, admin: dict = Depends(current_admin)):
+    """Stop a recurring kitchen-manager task. Already-created instances stay."""
+    _require_pk_tasks(admin)
+    with SessionLocal() as db:
+        row = db.get(PkTaskTemplateRow, template_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
+        row.active = 0
+        db.commit()
+        title = row.title
+    emit_live_event(
+        admin.get("name") or admin["email"], "pk_tasks_recurring_stopped",
+        f"stopped the recurring kitchen task “{title[:60]}”", {"module": "Tasks"},
+    )
+    return {"ok": True}
 
 
 @api.get("/pk-tasks")
@@ -3055,6 +3266,7 @@ def pk_tasks_list(
 ):
     """Hema's reflection view: tasks she assigned, with live status from PK."""
     _require_pk_tasks(admin)
+    ensure_pk_task_instances(datetime.now(timezone.utc).replace(tzinfo=None))
     # The authorized reviewers (Hema, Shashank, superadmins) all see EVERY
     # manager's tasks — not just the ones they personally assigned.
     where = "WHERE 1=1"
@@ -3154,6 +3366,10 @@ def leaderboard(admin: dict = Depends(current_admin)):
 def overview(admin: dict = Depends(current_admin)):
     """Live-page dashboard widgets: program load per owner, private messages
     awaiting MY reply (grouped by person), and open feedback count."""
+    # Every signed-in admin polls this, so it is where recurring kitchen tasks
+    # reliably get materialised (throttled internally). Kept outside the
+    # session below so it doesn't hold a second connection open.
+    ensure_pk_task_instances(datetime.now(timezone.utc).replace(tzinfo=None))
     me = admin["email"]
     with SessionLocal() as db:
         owner_rows = (

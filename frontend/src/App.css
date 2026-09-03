@@ -3878,3 +3878,15 @@ button.link {
 .tpl-edit .tpl-day {
   width: 84px;
 }
+
+/* ---- Recurring kitchen-manager tasks ---- */
+.pk-recurring .org-row {
+  align-items: center;
+}
+
+.pk-tpl-who {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
